@@ -1,0 +1,27 @@
+
+> blink-expo-starter@1.0.0 lint
+> EXPO_NO_TELEMETRY=1 npx expo lint
+
+env: load .env.local
+env: export EXPO_PUBLIC_BLINK_PROJECT_ID EXPO_PUBLIC_BLINK_PUBLISHABLE_KEY EXPO_PUBLIC_SUPABASE_URL EXPO_PUBLIC_SUPABASE_ANON_KEY EXPO_PUBLIC_GEMINI_API_KEY
+
+/home/ayari/smarttrack/app/(tabs)/index.tsx
+  12:3  warning  'withSpring' is defined but never used                                                                                  @typescript-eslint/no-unused-vars
+  13:3  warning  'interpolate' is defined but never used                                                                                 @typescript-eslint/no-unused-vars
+  98:6  warning  React Hook useEffect has missing dependencies: 'float' and 'index'. Either include them or remove the dependency array  react-hooks/exhaustive-deps
+
+/home/ayari/smarttrack/app/(tabs)/scan.tsx
+  43:6  warning  React Hook useEffect has a missing dependency: 'requestPermission'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+/home/ayari/smarttrack/app/admin.tsx
+   5:10  warning  'router' is defined but never used         @typescript-eslint/no-unused-vars
+  12:11  warning  'user' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+/home/ayari/smarttrack/app/ai-assistant.tsx
+  42:6  warning  React Hook useEffect has a missing dependency: 'fadeAnim'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+/home/ayari/smarttrack/app/export.tsx
+  61:9  warning  'content' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+✖ 8 problems (0 errors, 8 warnings)
+
