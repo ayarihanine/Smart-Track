@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { getSupabaseClient } from '@/lib/supabase';
+import { clearPersistedSupabaseSession, getSupabaseClient } from '@/lib/supabase';
 import { UserProfile, UserRole } from '@/types';
 import { RealtimeChannel } from '@supabase/supabase-js';
 
@@ -17,6 +17,13 @@ interface AuthState {
 }
 
 let profileSubscription: RealtimeChannel | null = null;
+
+function isInvalidRefreshTokenError(error: unknown) {
+  if (!(error instanceof Error)) return false;
+
+  const message = error.message.toLowerCase();
+  return message.includes('invalid refresh token') || message.includes('refresh token not found');
+}
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
@@ -102,7 +109,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         .subscribe();
     };
 
-    const { data: { session } } = await supabase.auth.getSession();
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError) {
+      if (isInvalidRefreshTokenError(sessionError)) {
+        console.warn('Supabase session refresh failed. Clearing the stale local session and continuing signed out.');
+        await clearPersistedSupabaseSession();
+        set({ user: null, isAuthenticated: false, isLoading: false });
+        return;
+      }
+
+      console.error('Failed to restore Supabase session:', sessionError);
+      set({ isLoading: false });
+      return;
+    }
+
     if (session?.user) {
       const user = session.user;
       
@@ -129,7 +149,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
 
     // Listener for auth state changes
-    supabase.auth.onAuthStateChange(async (event, session) => {
+    supabase.auth.onAuthStateChange((event, session) => {
       if (session?.user) {
         const user = session.user;
         
@@ -144,9 +164,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             },
             isAuthenticated: true,
           });
-          
-          await get().refreshProfile(user.id);
-          setupSubscription(user.id);
+
+          void (async () => {
+            await get().refreshProfile(user.id);
+            setupSubscription(user.id);
+          })();
         }
       } else {
         if (profileSubscription) {
@@ -225,4 +247,3 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ user: null, isAuthenticated: false });
   },
 }));
-

@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
+import { LinearGradient } from 'expo-linear-gradient';
 
 import { borderRadius, shadows, spacing, typography } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
@@ -83,12 +84,25 @@ function PerformanceCard({
   subtitle: string;
   palette: any;
 }) {
+  const { isDark } = useTheme();
   const valueColor = getPerformanceColor(value);
 
   return (
     <View style={[styles.performanceCard, { backgroundColor: palette.background, borderColor: palette.border }]}>
-      <Text style={[styles.performanceLabel, { color: palette.textSecondary }]}>{title}</Text>
-      <Text style={[styles.performanceValue, { color: valueColor }]}>{value.toFixed(1)}%</Text>
+      <LinearGradient
+        colors={isDark ? ['#1e293b', '#0f172a'] : ['#F8FAFC', '#F1F5F9']}
+        style={StyleSheet.absoluteFill}
+      />
+      <View style={styles.performanceIconHeader}>
+         <View style={[styles.performanceMiniIcon, { backgroundColor: valueColor + '20' }]}>
+            <Ionicons name="stats-chart" size={14} color={valueColor} />
+         </View>
+         <Text style={[styles.performanceLabel, { color: palette.textSecondary }]}>{title}</Text>
+      </View>
+      <Text style={[styles.performanceValue, { color: palette.text }]}>{value.toFixed(1)}%</Text>
+      <View style={[styles.performanceProgressBar, { backgroundColor: palette.border }]}>
+        <View style={[styles.performanceProgressFill, { width: `${value}%`, backgroundColor: valueColor }]} />
+      </View>
       <Text style={[styles.performanceSubtitle, { color: palette.textTertiary }]} numberOfLines={2}>
         {subtitle}
       </Text>
@@ -127,8 +141,8 @@ function SensorRow({
 }
 
 export default function DashboardScreen() {
-  const { t } = useTranslation();
-  const { palette } = useTheme();
+  const { palette, isDark } = useTheme();
+  const { t, language } = useTranslation();
   const [refreshing, setRefreshing] = useState(false);
   const [sensorRows, setSensorRows] = useState<EtatCapteur[]>([]);
   const [todayLosses, setTodayLosses] = useState<TodayLossSummary>({ totalCards: 0, totalCost: 0 });
@@ -200,6 +214,7 @@ export default function DashboardScreen() {
     };
   }, []);
 
+
   const onRefresh = async () => {
     setRefreshing(true);
     await Promise.all([
@@ -262,7 +277,11 @@ export default function DashboardScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={palette.primary} />}
         showsVerticalScrollIndicator={false}
       >
-        <View style={[styles.header, { backgroundColor: palette.background, borderColor: palette.border }]}>
+        <View style={[styles.header, { borderColor: palette.border, overflow: 'hidden' }]}>
+          <LinearGradient
+            colors={isDark ? ['#1e293b', '#0f172a'] : ['#ffffff', '#f8fafc']}
+            style={StyleSheet.absoluteFill}
+          />
           <Text style={[styles.headerTitle, { color: palette.text }]}>{t('smartTrackCmsLine')}</Text>
 
           <TouchableOpacity
@@ -344,8 +363,14 @@ export default function DashboardScreen() {
         <TouchableOpacity
           activeOpacity={0.85}
           onPress={() => router.push('/(tabs)/statistiques')}
-          style={[styles.fullStatsButton, { backgroundColor: palette.primary }]}
+          style={styles.fullStatsButton}
         >
+          <LinearGradient
+            colors={[palette.primary, isDark ? '#1E40AF' : '#3B82F6']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={StyleSheet.absoluteFill}
+          />
           <Text style={styles.fullStatsText}>{t('viewFullStats')}</Text>
           <Ionicons name="arrow-forward" size={18} color="#FFFFFF" />
         </TouchableOpacity>
@@ -410,15 +435,41 @@ const styles = StyleSheet.create({
     ...shadows.sm,
   },
   performanceLabel: {
-    ...typography.captionBold,
-    marginBottom: 10,
+    ...typography.tiny,
+    fontWeight: '700',
+    textTransform: 'uppercase',
   },
   performanceValue: {
-    ...typography.h1,
+    ...typography.h2,
+    fontWeight: '800',
     marginBottom: 8,
   },
   performanceSubtitle: {
-    ...typography.small,
+    ...typography.tiny,
+    fontWeight: '600',
+  },
+  performanceProgressBar: {
+    height: 4,
+    borderRadius: 2,
+    marginVertical: 12,
+    overflow: 'hidden',
+  },
+  performanceProgressFill: {
+    height: '100%',
+    borderRadius: 2,
+  },
+  performanceIconHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  performanceMiniIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   sectionCard: {
     borderWidth: 1,
@@ -513,6 +564,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.sm,
+    overflow: 'hidden',
     ...shadows.md,
   },
   fullStatsText: {

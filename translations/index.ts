@@ -18,8 +18,7 @@ export const translations = {
         noMatches: 'No cards match',
         delete: 'Delete',
         goBack: 'Go Back',
-        teamMessenger: 'Team Messenger',
-        teamMessengerDesc: 'Chat with operators & supervisors',
+
         settings: 'Settings',
         features: 'Features',
         supervision: 'Supervision',
@@ -101,6 +100,8 @@ export const translations = {
         connectionRefused: 'Connection Refused.',
         testing: 'Testing...',
         test: 'Test',
+        helpSupport: 'Help & Support',
+        helpSupportDesc: 'Get help with the application',
 
         // Home
         quickActions: 'Quick Actions',
@@ -119,7 +120,7 @@ export const translations = {
         activity: 'Activity',
         rankings: 'Rankings',
         operationalBanner: 'All Systems Operational',
-        operationalSub: 'RFID · n8n · Supabase — Live',
+        operationalSub: 'n8n · Supabase — Live',
         actionRequired: 'Action Required',
         stuckFor: 'These cards have been stuck for over',
         stuckBadge: 'Stuck',
@@ -139,8 +140,7 @@ export const translations = {
         scanToSeeHere: 'Scan a card to see it here',
         filterByStage: 'Filter by Stage',
         sortBy: 'Sort By',
-        recentScans: 'Recent Scans',
-        stageOrder: 'Stage Order',
+
         idAZ: 'ID (A-Z)',
         reset: 'Reset',
         applyFilters: 'Apply Filters',
@@ -153,8 +153,7 @@ export const translations = {
         manualRegistry: 'Manual Registry',
         opticalReader: 'Active: Optical Card Reader',
         cameraReady: 'Camera Ready',
-        rfidStation: 'RFID Station Interface',
-        rfidDesc: 'Connect to Raspberry Pi Node-01 to listen for physical card tags.',
+
         listenHardware: 'Listen for Hardware Event',
         listening: 'LISTENING...',
         cardDetected: 'CARD DETECTED',
@@ -257,11 +256,11 @@ export const translations = {
 
         // Onboarding
         slide1Title: 'Track Every Card',
-        slide1Subtitle: 'Welcome to SmartTrack',
+        slide1Subtitle: 'Welcome to Card Track',
         slide1Body: 'Monitor every electronic card as it moves through your production line — from SMT to final shipping — in real time.',
         slide2Title: 'Scan in Seconds',
-        slide2Subtitle: 'Camera, RFID, or Manual',
-        slide2Body: 'Use your phone camera, an RFID reader, or type the card ID manually. Scans are logged instantly with location and timestamp.',
+        slide2Subtitle: 'Camera or Manual',
+        slide2Body: 'Use your phone camera or type the card ID manually. Scans are logged instantly with location and timestamp.',
         slide3Title: 'Roles & Insights',
         slide3Subtitle: 'Operators, Supervisors, Admins',
         slide3Body: 'Every team member has a role. Operators scan cards, supervisors oversee stages, and admins get full analytics and quality reports.',
@@ -409,7 +408,7 @@ export const translations = {
         exportAction: 'Export X Data',
 
         // Production Dashboard
-        smartTrackCmsLine: 'SmartTrack – CMS Line',
+        smartTrackCmsLine: 'Card Track',
         dashboardTab: 'Dashboard',
         cardsTab: 'Cards',
         piOnline: 'Pi Online',
@@ -675,6 +674,8 @@ export const translations = {
         connectionRefused: 'Connexion refusée.',
         testing: 'Test...',
         test: 'Tester',
+        helpSupport: 'Aide & Support',
+        helpSupportDesc: 'Obtenir de l\'aide avec l\'application',
 
         // Home
         quickActions: 'Actions rapides',
@@ -693,7 +694,7 @@ export const translations = {
         activity: 'Activité',
         rankings: 'Classements',
         operationalBanner: 'Tous les systèmes opérationnels',
-        operationalSub: 'RFID · n8n · Supabase — En direct',
+        operationalSub: 'n8n · Supabase — En direct',
         actionRequired: 'Action requise',
         stuckFor: 'Ces cartes sont bloquées depuis plus de',
         stuckBadge: 'Bloqué',
@@ -727,8 +728,7 @@ export const translations = {
         manualRegistry: 'Registre manuel',
         opticalReader: 'Actif : Lecteur optique de carte',
         cameraReady: 'Caméra prête',
-        rfidStation: 'Interface station RFID',
-        rfidDesc: 'Connectez-vous au nœud Raspberry Pi-01 pour écouter les étiquettes de carte physiques.',
+
         listenHardware: 'Écouter l\'événement matériel',
         listening: 'EN ÉCOUTE...',
         cardDetected: 'CARTE DÉTECTÉE',
@@ -831,11 +831,11 @@ export const translations = {
 
         // Onboarding
         slide1Title: 'Suivez chaque carte',
-        slide1Subtitle: 'Bienvenue sur SmartTrack',
+        slide1Subtitle: 'Bienvenue sur Card Track',
         slide1Body: 'Surveillez chaque carte électronique au fil de la production, du SMT à l\'expédition finale, en temps réel.',
         slide2Title: 'Scannez en secondes',
-        slide2Subtitle: 'Caméra, RFID ou Manuel',
-        slide2Body: 'Utilisez votre caméra, un lecteur RFID ou saisissez l\'ID manuellement. Les scans sont enregistrés instantanément.',
+        slide2Subtitle: 'Caméra ou Manuel',
+        slide2Body: 'Utilisez votre caméra ou saisissez l\'ID manuellement. Les scans sont enregistrés instantanément.',
         slide3Title: 'Rôles & Analyses',
         slide3Subtitle: 'Opérateurs, Superviseurs, Admins',
         slide3Body: 'Chaque membre a un rôle. Opérateurs scannent, superviseurs surveillent, admins analysent.',
@@ -983,7 +983,7 @@ export const translations = {
         exportAction: 'Exporter les données X',
 
         // Production Dashboard
-        smartTrackCmsLine: 'SmartTrack – Ligne CMS',
+        smartTrackCmsLine: 'Card Track',
         dashboardTab: 'Tableau',
         cardsTab: 'Cartes',
         piOnline: 'Pi en ligne',
@@ -1143,7 +1143,6 @@ export const translations = {
         roleAdmin: 'Administrateur',
         roleSupervisor: 'Superviseur',
         roleOperator: 'Opérateur',
-        statisticsTab: 'Statistiques',
         unknownUser: 'Utilisateur inconnu',
         unavailable: 'Indisponible',
         confirmSignOut: 'Êtes-vous sûr de vouloir vous déconnecter ?',
@@ -1245,6 +1244,8 @@ export const translations = {
         connectionRefused: 'تم رفض الاتصال',
         testing: 'جارٍ الاختبار...',
         test: 'اختبار',
+        helpSupport: 'المساعدة والدعم',
+        helpSupportDesc: 'احصل على المساعدة بخصوص التطبيق',
 
         // Home
         quickActions: 'إجراءات سريعة',
@@ -1262,7 +1263,7 @@ export const translations = {
         activity: 'النشاط',
         rankings: 'الترتيب',
         operationalBanner: 'جميع الأنظمة تعمل بشكل طبيعي',
-        operationalSub: 'RFID · n8n · Supabase — مباشر',
+        operationalSub: 'n8n · Supabase — مباشر',
         actionRequired: 'إجراء مطلوب',
         stuckFor: 'هذه البطاقات عالقة لأكثر من',
         stuckBadge: 'عالقة',
@@ -1396,11 +1397,11 @@ export const translations = {
 
         // Onboarding
         slide1Title: 'تتبع كل بطاقة',
-        slide1Subtitle: 'مرحباً بك في SmartTrack',
+        slide1Subtitle: 'مرحباً بك في Card Track',
         slide1Body: 'راقب كل بطاقة إلكترونية أثناء انتقالها عبر خط الإنتاج - من مرحلة SMT إلى الشحن النهائي - في الوقت الفعلي.',
         slide2Title: 'مسح في ثوانٍ',
-        slide2Subtitle: 'كاميرا، RFID أو يدوي',
-        slide2Body: 'استخدم كاميرا الهاتف، قارئ RFID، أو أدخل معرّف البطاقة يدوياً. يتم تسجيل المسحات فوراً.',
+        slide2Subtitle: 'كاميرا أو يدوي',
+        slide2Body: 'استخدم كاميرا الهاتف أو أدخل معرّف البطاقة يدوياً. يتم تسجيل المسحات فوراً.',
         slide3Title: 'الأدوار والرؤى',
         slide3Subtitle: 'عامل، مشرف، مسؤول',
         slide3Body: 'لكل عضو دور. العمال يمسحون، المشرفون يراقبون، والمسؤولون يحللون.',
@@ -1548,7 +1549,7 @@ export const translations = {
         delete: 'حذف',
 
         // Production Dashboard
-        smartTrackCmsLine: 'سمارت تراك – خط CMS',
+        smartTrackCmsLine: 'Card Track',
         dashboardTab: 'لوحة',
         cardsTab: 'البطاقات',
         piOnline: 'Pi متصل',
@@ -1708,7 +1709,6 @@ export const translations = {
         roleAdmin: 'مسؤول',
         roleSupervisor: 'مشرف',
         roleOperator: 'مشغل',
-        statisticsTab: 'الإحصائيات',
         unknownUser: 'مستخدم غير معروف',
         unavailable: 'غير متاح',
         confirmSignOut: 'هل أنت متأكد أنك تريد تسجيل الخروج؟',

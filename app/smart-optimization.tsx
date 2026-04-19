@@ -22,7 +22,7 @@ export default function SmartOptimizationScreen() {
     },
     {
       title: 'Predictive Maintenance',
-      desc: 'RFID Scanner at Station 03 is reporting intermittent connectivity. Maintenance recommended in next 24h.',
+      desc: 'Optical Scanner at Station 01 is reporting intermittent connectivity. Maintenance recommended in next 24h.',
       icon: 'construct',
       color: '#F59E0B',
       type: 'Warning',

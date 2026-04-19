@@ -9,7 +9,7 @@ import { router } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
 import { getCards } from '@/lib/api';
-import { ElectronicCard, FilterOptions, StageType } from '@/types';
+import { ElectronicCard, FilterOptions } from '@/types';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
 
@@ -24,7 +24,7 @@ export default function HistoryScreen() {
   });
   const [tempFilters, setTempFilters] = useState<FilterOptions>(filters);
 
-  const STAGES: { value: StageType; label: string; color: string }[] = [
+  const STAGES: { value: string; label: string; color: string }[] = [
     { value: 'Assembly', label: t('assembly'), color: palette.primary },
     { value: 'Testing', label: t('testing'), color: '#D97706' },
     { value: 'Packaging', label: t('packaging'), color: '#EA580C' },
@@ -59,13 +59,16 @@ export default function HistoryScreen() {
     setTempFilters({ stages: [], sortBy: 'recent' });
   }
 
-  function toggleStage(stage: StageType) {
-    setTempFilters(prev => ({
-      ...prev,
-      stages: prev.stages.includes(stage)
-        ? prev.stages.filter(s => s !== stage)
-        : [...prev.stages, stage],
-    }));
+  function toggleStage(stage: string) {
+    setTempFilters(prev => {
+      const stages = prev.stages || [];
+      return {
+        ...prev,
+        stages: stages.includes(stage)
+          ? stages.filter(s => s !== stage)
+          : [...stages, stage],
+      };
+    });
   }
 
   function formatDate(d: string) {
@@ -152,9 +155,9 @@ export default function HistoryScreen() {
       <TouchableOpacity style={styles.filterRow} onPress={openFilter} activeOpacity={0.8}>
         <Ionicons name="options" size={20} color={palette.primary} />
         <Text style={[styles.filterText, { color: palette.primary }]}>{t('filterSort')}</Text>
-        {filters.stages.length > 0 && (
+        {(filters.stages?.length || 0) > 0 && (
           <View style={[styles.filterBadge, { backgroundColor: palette.primary }]}>
-            <Text style={styles.filterBadgeText}>{filters.stages.length}</Text>
+            <Text style={styles.filterBadgeText}>{filters.stages?.length}</Text>
           </View>
         )}
       </TouchableOpacity>
@@ -194,7 +197,7 @@ export default function HistoryScreen() {
             <Text style={styles.filterSectionTitle}>{t('filterByStage')}</Text>
             <View style={styles.stageRow}>
               {STAGES.map(s => {
-                const active = tempFilters.stages.includes(s.value);
+                const active = (tempFilters.stages || []).includes(s.value);
                 return (
                   <TouchableOpacity
                     key={s.value}

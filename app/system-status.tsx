@@ -10,6 +10,7 @@ import { useTheme } from '@/components/ThemeProvider';
 import { useTranslation } from '@/hooks/useTranslation';
 import { getPiStatus } from '@/lib/api';
 import { SystemNode } from '@/types/production';
+import { useRoleGuard } from '@/hooks/useRoleGuard';
 
 const SUCCESS_COLOR = '#10B981';
 const ERROR_COLOR = '#EF4444';
@@ -50,6 +51,7 @@ function InfoRow({
 }
 
 export default function SystemStatusScreen() {
+  useRoleGuard(['admin']);
   const { t, language } = useTranslation();
   const { palette } = useTheme();
 

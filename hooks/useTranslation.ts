@@ -6,10 +6,8 @@ export function useTranslation() {
     const setSettings = useSettingsStore((state) => state.setSettings);
 
     const t = (key: TranslationKey): string => {
-        const currentLanguage = language || 'en';
-        const langResStr = translations[currentLanguage];
-        if (!langResStr) return translations.en[key] || key;
-        return langResStr[key] || translations.en[key] || key;
+        const langResStr = (translations[language] || translations.en) as any;
+        return langResStr[key] || (translations.en as any)[key] || key;
     };
 
     const setLanguage = (lang: any) => {

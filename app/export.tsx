@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
 import { getCards } from '@/lib/api';
 import { useTranslation } from '@/hooks/useTranslation';
+import { useRoleGuard } from '@/hooks/useRoleGuard';
 
 type ExportFormat = 'json' | 'csv';
 type ExportScope = 'all' | 'in_progress' | 'completed';
@@ -38,6 +39,7 @@ function ScopeBtn({ label, active, onPress }: { label: string; active: boolean; 
 }
 
 export default function ExportScreen() {
+  useRoleGuard(['admin', 'supervisor']);
   const { t } = useTranslation();
   const [format, setFormat] = useState<ExportFormat>('json');
   const [scope, setScope] = useState<ExportScope>('all');

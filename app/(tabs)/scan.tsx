@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
-  Alert, Animated, ScrollView, ActivityIndicator, Image
+  Alert, Animated, ScrollView, ActivityIndicator
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -17,7 +17,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 
 const QUICK_IDS = ['CARD00001', 'CARD00002', 'CARD99887', 'CARD55443', 'CARD12345'];
 
-type ScanMode = 'camera' | 'manual' | 'rfid';
+type ScanMode = 'camera' | 'manual';
 
 export default function ScanScreen() {
   const { t } = useTranslation();
@@ -28,7 +28,7 @@ export default function ScanScreen() {
   const [scanning, setScanning] = useState(false);
   const [scanned, setScanned] = useState(false);
   const [scannedCard, setScannedCard] = useState<{ cardId: string; stage: string; productName?: string } | null>(null);
-  const [hardwareStatus, setHardwareStatus] = useState<'idle' | 'listening' | 'detected'>('idle');
+
   const [isBatchMode, setIsBatchMode] = useState(false);
   const [batchQueue, setBatchQueue] = useState<{ cardId: string; stage: string; productName?: string }[]>([]);
 
@@ -113,18 +113,7 @@ export default function ScanScreen() {
     processTrack(cardInput.trim().toUpperCase(), 'Manual App Entry');
   }
 
-  function simulateHardwareScan() {
-    setHardwareStatus('listening');
-    // Simulate a hardware detection after 2 seconds
-    setTimeout(() => {
-      setHardwareStatus('detected');
-      setTimeout(() => {
-        const randomId = QUICK_IDS[Math.floor(Math.random() * QUICK_IDS.length)];
-        processTrack(randomId, 'RFID Node Node-01');
-        setHardwareStatus('idle');
-      }, 1000);
-    }, 2000);
-  }
+
 
   function handleViewDetails() {
     if (scannedCard) {
@@ -148,7 +137,12 @@ export default function ScanScreen() {
     return (
       <View style={styles.successScreen}>
         <Animated.View style={[styles.successIcon, { transform: [{ scale: pulseAnim }], backgroundColor: 'transparent' }]}>
-          <Image source={require('../../assets/images/card.png')} style={{ width: 80, height: 80, resizeMode: 'contain' }} />
+          <View style={styles.successIconBadge}>
+            <Ionicons name="card-outline" size={42} color={colors.primary} />
+            <View style={styles.successCheck}>
+              <Ionicons name="checkmark" size={14} color={colors.white} />
+            </View>
+          </View>
         </Animated.View>
 
         <Text style={styles.successTitle}>{t('scanSuccessfulTitle')}</Text>
@@ -190,7 +184,7 @@ export default function ScanScreen() {
   const getHeaderSubtitle = () => {
     switch (mode) {
       case 'camera': return t('qrScanner');
-      case 'rfid': return t('hardwareInterface');
+
       case 'manual': return t('manualRegistry');
       default: return '';
     }
@@ -216,14 +210,14 @@ export default function ScanScreen() {
             </Text>
           </TouchableOpacity>
           <View style={styles.modeToggle}>
-            {(['camera', 'rfid', 'manual'] as ScanMode[]).map((m) => (
+            {(['camera', 'manual'] as ScanMode[]).map((m) => (
               <TouchableOpacity
                 key={m}
                 onPress={() => setMode(m)}
                 style={[styles.modeBtn, mode === m && styles.modeBtnActive]}
               >
                 <Ionicons
-                  name={m === 'camera' ? 'camera' : m === 'rfid' ? 'radio-outline' : 'keypad'}
+                  name={m === 'camera' ? 'camera' : 'keypad'}
                   size={18}
                   color={mode === m ? colors.white : palette.textTertiary}
                 />
@@ -273,46 +267,7 @@ export default function ScanScreen() {
           </View>
         )}
 
-        {mode === 'rfid' && (
-          <View style={styles.centerContent}>
-            <View style={[styles.hardwarePlate, { backgroundColor: palette.background, borderColor: palette.border }]}>
-              <Ionicons
-                name={hardwareStatus === 'detected' ? 'radio-outline' : 'hardware-chip-outline'}
-                size={80}
-                color={hardwareStatus === 'listening' ? colors.primary : palette.textTertiary}
-              />
-              <Text style={[styles.hardwareTitle, { color: palette.text }]}>{t('rfidStation')}</Text>
-              <Text style={[styles.hardwareDesc, { color: palette.textTertiary }]}>{t('rfidDesc')}</Text>
 
-              <TouchableOpacity
-                style={[styles.connectBtn, hardwareStatus !== 'idle' && styles.connectBtnDisabled]}
-                onPress={simulateHardwareScan}
-                disabled={hardwareStatus !== 'idle'}
-              >
-                {hardwareStatus === 'listening' ? (
-                  <>
-                    <ActivityIndicator size="small" color={colors.white} />
-                    <Text style={styles.connectBtnText}>{t('listening')}</Text>
-                  </>
-                ) : hardwareStatus === 'detected' ? (
-                  <>
-                    <Ionicons name="checkmark-circle" size={18} color={colors.white} />
-                    <Text style={styles.connectBtnText}>{t('cardDetected')}</Text>
-                  </>
-                ) : (
-                  <>
-                    <Ionicons name="link" size={18} color={colors.white} />
-                    <Text style={styles.connectBtnText}>{t('listenHardware')}</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-
-              {hardwareStatus === 'listening' && (
-                <Text style={styles.waitingText}>{t('waitingPi')}</Text>
-              )}
-            </View>
-          </View>
-        )}
 
         {mode === 'manual' && (
           <View style={styles.manualEntry}>
@@ -472,6 +427,27 @@ const styles = StyleSheet.create({
   // Success Screen
   successScreen: { flex: 1, backgroundColor: '#0F172A', alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
   successIcon: { width: 120, height: 120, borderRadius: 60, backgroundColor: '#10B98120', alignItems: 'center', justifyContent: 'center', marginBottom: spacing.xl },
+  successIconBadge: {
+    width: 84,
+    height: 84,
+    borderRadius: 42,
+    backgroundColor: colors.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  successCheck: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: colors.success,
+    borderWidth: 2,
+    borderColor: '#0F172A',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   successTitle: { ...typography.h2, color: colors.white, marginBottom: spacing.xxl },
   successCard: { width: '100%', backgroundColor: colors.white, borderRadius: borderRadius.xl, padding: spacing.xl, ...shadows.xl },
   successHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.md },

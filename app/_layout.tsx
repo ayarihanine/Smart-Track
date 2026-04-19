@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useFrameworkReady } from '@/hooks/useFrameworkReady';
 import { useEffect } from 'react';
 import { useAuthStore } from '@/store/authStore';
+import { configureSupabaseAuthAutoRefresh } from '@/lib/supabase';
 import { useSettingsStore } from '@/store/settingsStore';
 import { ThemeProvider, useTheme } from '@/components/ThemeProvider';
 import { useTranslation } from '@/hooks/useTranslation';
@@ -14,14 +15,14 @@ const queryClient = new QueryClient({
   },
 });
 
-import { useMessageStore } from '@/store/messageStore';
+
 
 function AuthListener() {
   const user = useAuthStore(state => state.user);
   const initializeAuth = useAuthStore(state => state.initialize);
   const loadSettings = useSettingsStore(state => state.loadSettings);
   const hasSeenOnboarding = useSettingsStore(state => state.hasSeenOnboarding);
-  const subscribeToMessages = useMessageStore(state => state.subscribeToMessages);
+
 
   useEffect(() => {
     if (typeof loadSettings === 'function') {
@@ -33,11 +34,10 @@ function AuthListener() {
   }, [loadSettings, initializeAuth]);
 
   useEffect(() => {
-    if (user?.id) {
-      const unsubscribe = subscribeToMessages(user.id);
-      return () => unsubscribe();
-    }
-  }, [user?.id, subscribeToMessages]);
+    return configureSupabaseAuthAutoRefresh();
+  }, []);
+
+
 
   useEffect(() => {
     if (hasSeenOnboarding === false) {
@@ -63,7 +63,6 @@ function RootNavigator() {
         headerTitleStyle: { fontWeight: '700' },
       }}
     >
-      <Stack.Screen name="index" />
       <Stack.Screen name="auth" />
       <Stack.Screen name="(tabs)" />
       <Stack.Screen
@@ -82,13 +81,13 @@ function RootNavigator() {
         }}
       />
       <Stack.Screen
-        name="configuration"
+        name="configuration/index"
         options={{
           headerShown: false,
         }}
       />
       <Stack.Screen
-        name="articles"
+        name="articles/index"
         options={{
           headerShown: false,
         }}
@@ -112,19 +111,10 @@ function RootNavigator() {
           headerTintColor: '#fff',
         }}
       />
-      <Stack.Screen name="leaderboard" options={{ headerShown: false }} />
-      <Stack.Screen name="activity-feed" options={{
-        headerShown: true, headerTitle: t('activityFeed'),
-        headerStyle: { backgroundColor: palette.primary },
-        headerTintColor: '#fff',
-      }} />
       <Stack.Screen
         name="production-map"
         options={{
-          headerShown: true,
-          headerTitle: t('productionMap'),
-          headerStyle: { backgroundColor: palette.backgroundSecondary },
-          headerTintColor: palette.text,
+          headerShown: false,
         }}
       />
       <Stack.Screen
@@ -136,7 +126,6 @@ function RootNavigator() {
           headerTintColor: '#fff',
         }}
       />
-      <Stack.Screen name="+not-found" />
     </Stack>
   );
 }

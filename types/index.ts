@@ -62,6 +62,7 @@ export interface ElectronicCard {
   updatedAt: string;
   currentStage?: string;
   currentLocation?: string;
+  productName?: string;
   loadingPlan?: LoadingPlanEntry[];
   componentInsertions?: ComponentInsertion[];
   qualityIssues?: string;
@@ -75,7 +76,6 @@ export interface ScanEvent {
   location: string;
   stage: string;
   timestamp: string;
-  rfidTag?: string;
   notes?: string;
   partReference?: string;
   eventType?: 'location_update' | 'component_scan' | 'machine_entry' | 'machine_exit' | 'quality_alert' | 'blocking_anomaly';
@@ -135,6 +135,7 @@ export interface FilterOptions {
   currentMachineStatus?: 'in_progress' | 'completed' | 'blocked';
   sortBy: 'recent' | 'stage_order' | 'id_asc';
   status?: CardStatus;
+  stages?: string[];
 }
 
 // ============================================================================

@@ -5,16 +5,16 @@ import { BarChart } from 'react-native-chart-kit';
 import Svg, { Line, Rect, Text as SvgText } from 'react-native-svg';
 import { useQuery } from '@tanstack/react-query';
 
-import { borderRadius, shadows, spacing, typography } from '@/constants/design';
-import { useTheme } from '@/components/ThemeProvider';
-import { useTranslation } from '@/hooks/useTranslation';
+import { borderRadius, shadows, spacing, typography } from '../../constants/design';
+import { useTheme } from '../../components/ThemeProvider';
+import { useTranslation } from '../../hooks/useTranslation';
 import {
   getCardUnitCost,
   getDailyLossesStats,
   getDailyProductionStats,
   getLossesByMachineStats,
-} from '@/lib/api';
-import { PerteParMachine, ProductionParJour } from '@/types/production';
+} from '../../lib/api';
+import { PerteParMachine, ProductionParJour, PerteParJour } from '../../types/production';
 
 const screenWidth = Dimensions.get('window').width;
 const LOSS_COLOR = '#EF4444';
@@ -122,36 +122,36 @@ export default function StatisticsScreen() {
   const { t } = useTranslation();
   const { palette } = useTheme();
 
-  const lossesQuery = useQuery({
+  const lossesQuery = useQuery<PerteParJour[]>({
     queryKey: ['production', 'stats', 'losses-per-day'],
     queryFn: getDailyLossesStats,
   });
 
-  const productionQuery = useQuery({
+  const productionQuery = useQuery<ProductionParJour[]>({
     queryKey: ['production', 'stats', 'production-per-day'],
     queryFn: getDailyProductionStats,
   });
 
-  const machineQuery = useQuery({
+  const machineQuery = useQuery<PerteParMachine[]>({
     queryKey: ['production', 'stats', 'losses-per-machine'],
     queryFn: getLossesByMachineStats,
   });
 
-  const costQuery = useQuery({
+  const costQuery = useQuery<number>({
     queryKey: ['production', 'stats', 'card-cost'],
     queryFn: getCardUnitCost,
   });
 
-  const lossesData = useMemo(() => (lossesQuery.data || []).slice(-30), [lossesQuery.data]);
-  const productionData = useMemo(() => (productionQuery.data || []).slice(-30), [productionQuery.data]);
-  const machineStats = machineQuery.data || [];
+  const lossesData: PerteParJour[] = useMemo(() => (lossesQuery.data || []).slice(-30), [lossesQuery.data]);
+  const productionData: ProductionParJour[] = useMemo(() => (productionQuery.data || []).slice(-30), [productionQuery.data]);
+  const machineStats: PerteParMachine[] = machineQuery.data || [];
 
   const lossesChart = useMemo(() => {
     if (lossesData.length === 0) return null;
 
     return {
-      labels: lossesData.map((item) => dayLabel(item.jour)),
-      datasets: [{ data: lossesData.map((item) => item.total_cartes) }],
+      labels: lossesData.map((item: PerteParJour) => dayLabel(item.jour)),
+      datasets: [{ data: lossesData.map((item: PerteParJour) => item.total_cartes) }],
     };
   }, [lossesData]);
 
@@ -201,7 +201,7 @@ export default function StatisticsScreen() {
       >
         <View style={[styles.costBadge, { backgroundColor: palette.background, borderColor: palette.border }]}>
           <Text style={[styles.costBadgeText, { color: palette.primary }]}>
-            {t('unitCostBadge').replace('{{cost}}', costQuery.data?.toFixed(3) || '0.000')}
+            {t('unitCostBadge').replace('{{cost}}', (costQuery.data ?? 0).toFixed(3))}
           </Text>
         </View>
 
@@ -267,7 +267,7 @@ export default function StatisticsScreen() {
               </Text>
             </View>
 
-            {machineStats.map((row: PerteParMachine, index) => (
+            {machineStats.map((row: PerteParMachine, index: number) => (
               <View
                 key={`${row.machine}-${index}`}
                 style={[

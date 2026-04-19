@@ -131,15 +131,7 @@ export default function ProfileScreen() {
       if (!supabase || !user) return;
 
       try {
-        setTestingWebhook(true); // Re-use loading state or add a new one
-
-        // In a real app, we'd upload to Supabase Storage first.
-        // For this implementation, we'll just update the user metadata with the URI 
-        // (which might be local, but it demonstrates the feature as requested)
-        // Ideally we would: 
-        // 1. Upload to storage
-        // 2. Get public URL
-        // 3. Update metadata
+        setTestingWebhook(true);
 
         const { error } = await supabase.auth.updateUser({
           data: { avatarUrl: uri }
@@ -147,7 +139,6 @@ export default function ProfileScreen() {
 
         if (error) throw error;
 
-        // Also update public.profiles table
         await (supabase.from('profiles') as any).update({ avatar_url: uri }).eq('id', user.id);
 
         Alert.alert(t('success'), "Profile picture updated!");
@@ -179,13 +170,16 @@ export default function ProfileScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
       <View style={[styles.header, { backgroundColor: palette.background, borderBottomColor: palette.border }]}>
-        <Text style={[styles.headerTitle, { color: palette.text }]}>{t('profile')}</Text>
+        <View style={styles.headerLeft}>
+          <TouchableOpacity onPress={() => router.push('/(tabs)')} style={styles.backBtnHeader}>
+            <Ionicons name="arrow-back" size={24} color={palette.text} />
+          </TouchableOpacity>
+          <Text style={[styles.headerTitle, { color: palette.text }]}>{t('profile')}</Text>
+        </View>
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-        {/* Premium Profile Header */}
         <View style={styles.headerContainer}>
-          {/* Banner */}
           <View style={[styles.banner, { backgroundColor: roleColor + '30' }]}>
             <View style={[StyleSheet.absoluteFill, { backgroundColor: roleColor + '15' }]} />
             <View style={[styles.bannerCircle, styles.bannerCircleLg, { backgroundColor: roleColor + '20', top: -20, right: -20 }]} />
@@ -193,12 +187,10 @@ export default function ProfileScreen() {
             <Ionicons name={roleIcon as any} size={80} color={roleColor + '25'} style={styles.bannerIcon} />
           </View>
 
-          {/* Centered Avatar & Info */}
           <Animated.View
             entering={FadeInDown.duration(600).delay(150)}
             style={styles.profileCenter}
           >
-            {/* Avatar */}
             <TouchableOpacity
               style={[styles.avatarContainer, { backgroundColor: palette.background }]}
               onPress={handleImagePick}
@@ -220,58 +212,41 @@ export default function ProfileScreen() {
               </View>
             </TouchableOpacity>
 
-            {/* Name */}
             <Text style={[styles.profileName, { color: palette.text }]}>{user?.displayName}</Text>
 
-            {/* Email */}
             <View style={styles.emailRow}>
               <Ionicons name="mail-outline" size={13} color={palette.textSecondary} />
               <Text style={[styles.profileEmail, { color: palette.textSecondary }]}>{user?.email}</Text>
             </View>
 
-            {/* Role Badge */}
             <View style={[styles.roleBadge, { backgroundColor: roleColor + '18', borderColor: roleColor + '50', borderWidth: 1 }]}>
               <Ionicons name={roleIcon as any} size={13} color={roleColor} />
               <Text style={[styles.roleText, { color: roleColor }]}>
-                {user?.role?.toUpperCase()}
+                {t(user?.role as any) || user?.role?.toUpperCase()}
               </Text>
             </View>
           </Animated.View>
         </View>
 
-        {/* ── Role-Based Tools ─────────────────────────────────── */}
+        {/* ── Tools ─────────────────────────────────── */}
         <View style={styles.section}>
           <SectionHeader title={t('myTools')} color={palette.textSecondary} />
           <View style={[styles.card, { backgroundColor: palette.background }]}>
-            {/* Admin Tools */}
-            {(user?.role === 'admin') && <>
-              <RoleToolItem
-                icon="people-outline" color="#8B5CF6"
-                label={t('adminPanel')} desc={t('adminPanelDesc')}
-                onPress={() => router.push('/admin')} palette={palette}
-              />
-              <View style={[styles.divider, { backgroundColor: palette.border }]} />
-              <RoleToolItem
-                icon="pulse-outline" color="#EF4444"
-                label={t('systemStatus')} desc="Monitor live system health"
-                onPress={() => router.push('/system-status')} palette={palette}
-              />
-              <View style={[styles.divider, { backgroundColor: palette.border }]} />
-            </>}
+            {/* All Roles */}
+            <RoleToolItem
+              icon="layers-outline" color="#3B82F6"
+              label={t('cardsTab')} desc={t('historyDesc')}
+              onPress={() => router.push('/(tabs)/history')} palette={palette}
+            />
+            <View style={[styles.divider, { backgroundColor: palette.border }]} />
+            <RoleToolItem
+              icon="bar-chart-outline" color="#2563EB"
+              label={t('statisticsTab')} desc={t('statisticsDesc') || 'Production statistics'}
+              onPress={() => router.push('/(tabs)/statistiques')} palette={palette}
+            />
 
             {/* Supervisor+ Tools */}
             {(user?.role === 'supervisor' || user?.role === 'admin') && <>
-              <RoleToolItem
-                icon="trophy-outline" color="#D97706"
-                label={t('floorLeaderboard')} desc={t('teamPerformanceDesc')}
-                onPress={() => router.push('/leaderboard')} palette={palette}
-              />
-              <View style={[styles.divider, { backgroundColor: palette.border }]} />
-              <RoleToolItem
-                icon="list-outline" color="#3B82F6"
-                label={t('scanLogs')} desc={t('scanLogsDesc')}
-                onPress={() => router.push('/scanner-log')} palette={palette}
-              />
               <View style={[styles.divider, { backgroundColor: palette.border }]} />
               <RoleToolItem
                 icon="warning-outline" color="#EF4444"
@@ -290,35 +265,26 @@ export default function ProfileScreen() {
                 label={t('qualityReports')} desc={t('qualityReportsDesc')}
                 onPress={() => router.push('/(tabs)/quality-report')} palette={palette}
               />
-              <View style={[styles.divider, { backgroundColor: palette.border }]} />
             </>}
 
-            {/* All Roles / Operator Tools */}
-            <RoleToolItem
-              icon="time-outline" color="#2563EB"
-              label={t('scanHistory')} desc={t('scanHistoryDesc')}
-              onPress={() => router.push('/(tabs)/history')} palette={palette}
-            />
-            <View style={[styles.divider, { backgroundColor: palette.border }]} />
-            <RoleToolItem
-              icon="sparkles-outline" color="#8B5CF6"
-              label={t('aiFeature')} desc={t('aiFeatureDesc')}
-              onPress={() => router.push('/ai-assistant' as any)} palette={palette}
-            />
-            {user?.role === 'admin' && (
-              <>
-                <View style={[styles.divider, { backgroundColor: palette.border }]} />
-                <RoleToolItem
-                  icon="bar-chart-outline" color="#2563EB"
-                  label={t('myAnalytics')} desc={t('myAnalyticsDesc')}
-                  onPress={() => router.push('/(tabs)/analytics')} palette={palette}
-                />
-              </>
-            )}
+            {/* Admin Tools */}
+            {(user?.role === 'admin') && <>
+              <View style={[styles.divider, { backgroundColor: palette.border }]} />
+              <RoleToolItem
+                icon="people-outline" color="#8B5CF6"
+                label={t('adminPanel')} desc={t('adminPanelDesc')}
+                onPress={() => router.push('/admin')} palette={palette}
+              />
+              <View style={[styles.divider, { backgroundColor: palette.border }]} />
+              <RoleToolItem
+                icon="pulse-outline" color="#EF4444"
+                label={t('systemStatus')} desc="Monitor live system health"
+                onPress={() => router.push('/system-status')} palette={palette}
+              />
+            </>}
           </View>
         </View>
 
-        {/* Account Info */}
         <View style={styles.section}>
           <SectionHeader title={t('account')} color={palette.textSecondary} />
           <View style={[styles.card, { backgroundColor: palette.background }]}>
@@ -337,32 +303,85 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        {/* Preferences & Settings */}
         <View style={styles.section}>
           <SectionHeader title={t('settings')} color={palette.textSecondary} />
           <View style={[styles.card, { backgroundColor: palette.background }]}>
-            <SettingRow
-              icon="settings-outline"
-              label={t('settings')}
-              onPress={() => router.push('/settings')}
-              color={palette.primary}
-              textColor={palette.text}
-              palette={palette}
-            />
+            <View style={styles.settingRow}>
+              <View style={[styles.settingIcon, { backgroundColor: palette.primary + '15' }]}>
+                <Ionicons name="color-palette-outline" size={20} color={palette.primary} />
+              </View>
+              <View style={styles.settingContent}>
+                <Text style={[styles.settingLabel, { color: palette.text }]}>{t('theme') || 'Theme'}</Text>
+                <Text style={[styles.settingValue, { color: palette.textSecondary }]}>
+                  {settings.theme === 'auto' ? 'System' : settings.theme === 'dark' ? 'Dark' : 'Light'}
+                </Text>
+              </View>
+              <View style={styles.optionsRow}>
+                {['light', 'dark', 'auto'].map((tOption) => (
+                  <TouchableOpacity
+                    key={tOption}
+                    onPress={() => settings.setSettings({ theme: tOption as any })}
+                    style={[
+                      styles.optionBtn,
+                      { borderColor: settings.theme === tOption ? palette.primary : palette.border },
+                      settings.theme === tOption && { backgroundColor: palette.primary }
+                    ]}
+                  >
+                    <Text style={[styles.optionText, { color: palette.textSecondary }, settings.theme === tOption && styles.optionTextActive]}>
+                      {tOption.charAt(0).toUpperCase() + tOption.slice(1)}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
             <View style={[styles.divider, { backgroundColor: palette.border }]} />
-            <SettingRow
-              icon="chatbubbles-outline"
-              label={t('teamMessenger')}
-              onPress={() => router.push('/messenger')}
-              color="#10B981"
-              textColor={palette.text}
-              palette={palette}
-            />
+            
+            <View style={styles.settingRow}>
+              <View style={[styles.settingIcon, { backgroundColor: colors.success + '15' }]}>
+                <Ionicons name="notifications-outline" size={20} color={colors.success} />
+              </View>
+              <View style={styles.settingContent}>
+                <Text style={[styles.settingLabel, { color: palette.text }]}>{t('notifications') || 'Push Notifications'}</Text>
+              </View>
+              <Switch
+                value={settings.notificationsEnabled}
+                onValueChange={(v) => handleToggle('notificationsEnabled', v)}
+                trackColor={{ false: palette.border, true: colors.success }}
+              />
+            </View>
+            <View style={[styles.divider, { backgroundColor: palette.border }]} />
+            
+            <View style={styles.settingRow}>
+              <View style={[styles.settingIcon, { backgroundColor: colors.warning + '15' }]}>
+                <Ionicons name="pulse-outline" size={20} color={colors.warning} />
+              </View>
+              <View style={styles.settingContent}>
+                <Text style={[styles.settingLabel, { color: palette.text }]}>{t('vibrationEnabled') || 'Haptic Feedback'}</Text>
+              </View>
+              <Switch
+                value={settings.vibrationEnabled}
+                onValueChange={(v) => handleToggle('vibrationEnabled', v)}
+                trackColor={{ false: palette.border, true: colors.warning }}
+              />
+            </View>
+            <View style={[styles.divider, { backgroundColor: palette.border }]} />
+            
+            <View style={styles.settingRow}>
+              <View style={[styles.settingIcon, { backgroundColor: palette.primary + '15' }]}>
+                <Ionicons name="cloud-offline-outline" size={20} color={palette.primary} />
+              </View>
+              <View style={styles.settingContent}>
+                <Text style={[styles.settingLabel, { color: palette.text }]}>{t('offlineModeEnabled') || 'Offline Queueing'}</Text>
+              </View>
+              <Switch
+                value={settings.offlineModeEnabled}
+                onValueChange={(v) => settings.setSettings({ offlineModeEnabled: v })}
+                trackColor={{ false: palette.border, true: palette.primary }}
+              />
+            </View>
           </View>
         </View>
 
-
-        {/* Webhook Config */}
         <View style={styles.section}>
           <SectionHeader title={t('integrations')} color={palette.textSecondary} />
           <View style={[styles.card, { backgroundColor: palette.background }]}>
@@ -410,7 +429,6 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        {/* Sign Out */}
         <View style={styles.section}>
           <TouchableOpacity
             style={[styles.signOutBtn, { backgroundColor: isDark ? '#450a0a' : '#FEF2F2', borderColor: isDark ? '#991b1b' : '#FECACA' }]}
@@ -434,6 +452,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
     borderBottomWidth: 1,
   },
+  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  backBtnHeader: { padding: 4 },
   headerTitle: { ...typography.h3 },
   scrollContent: { paddingBottom: spacing.xl },
   headerContainer: { marginBottom: spacing.md },
@@ -460,13 +480,6 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: -10,
     bottom: -10,
-  },
-  profileSection: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    paddingHorizontal: spacing.lg,
-    marginTop: -44,
-    gap: spacing.md,
   },
   avatarContainer: {
     padding: 4,
@@ -590,8 +603,43 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm, paddingVertical: 4,
     borderRadius: borderRadius.md, borderWidth: 1,
   },
-  optionBtnActive: { },
   optionText: { ...typography.small },
   optionTextActive: { color: colors.white, fontWeight: '700' },
+  brandingContainer: {
+    alignItems: 'center',
+    marginTop: spacing.xl,
+    paddingBottom: spacing.lg,
+  },
+  logoContainer: {
+    width: 80, height: 80, borderRadius: 20,
+    alignItems: 'center', justifyContent: 'center',
+    marginBottom: spacing.sm,
+    ...shadows.md,
+  },
+  logoImage: { width: '100%', height: '100%', borderRadius: 20 },
+  appName: { ...typography.h4, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' },
+  actionsRow: {
+    flexDirection: 'row',
+    padding: spacing.md,
+    gap: spacing.md,
+    borderRadius: borderRadius.xl,
+    ...shadows.sm,
+  },
+  actionBtn: {
+    flex: 1,
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  actionIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  actionLabel: {
+    ...typography.caption,
+    textAlign: 'center',
+    fontWeight: '600',
+  },
 });
-

@@ -12,6 +12,7 @@ import { useTranslation } from '@/hooks/useTranslation';
 
 import { getScanEvents } from '@/lib/api';
 import { ScanEvent } from '@/types';
+import { useRoleGuard } from '@/hooks/useRoleGuard';
 
 function ActivityItem({ item, palette }: { item: ScanEvent; palette: any }) {
     const { t } = useTranslation();
@@ -46,6 +47,7 @@ function ActivityItem({ item, palette }: { item: ScanEvent; palette: any }) {
 }
 
 export default function ActivityFeedScreen() {
+    useRoleGuard(['admin', 'supervisor']);
     const { t } = useTranslation();
     const { palette } = useTheme();
 

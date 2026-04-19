@@ -29,7 +29,7 @@ export default function TabLayout() {
 
     const channel = supabase
       .channel('pertes-tab-badge')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pertes_table' }, (payload) => {
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pertes_table' }, (payload: any) => {
         const row = payload.new as any;
         const dateValue = row?.date_temps || row?.timestamp;
         if (!dateValue) return;
@@ -72,20 +72,46 @@ export default function TabLayout() {
       }}
     >
       <Tabs.Screen
-        name="dashboard"
+        name="index"
         options={{
-          title: t('dashboardTab'),
+          title: t('home'),
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="home" size={size} color={color} />
           ),
         }}
       />
       <Tabs.Screen
+        name="dashboard"
+        options={{
+          title: t('dashboardTab'),
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="grid" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="pertes"
+        options={{
+          title: t('lossesTab'),
+          tabBarIcon: ({ color, size }) => (
+            <View style={styles.badgeWrap}>
+              <Ionicons name="trending-down" size={size} color={color} />
+              {badgeLabel ? (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>{badgeLabel}</Text>
+                </View>
+              ) : null}
+            </View>
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="history"
         options={{
+          href: null,
           title: t('cardsTab'),
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="albums" size={size} color={color} />
+            <Ionicons name="layers" size={size} color={color} />
           ),
         }}
       />
@@ -99,42 +125,26 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="pertes"
-        options={{
-          title: t('lossesTab'),
-          tabBarIcon: ({ color, size }) => (
-            <View style={styles.badgeWrap}>
-              <Ionicons name="warning" size={size} color={color} />
-              {badgeLabel ? (
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>{badgeLabel}</Text>
-                </View>
-              ) : null}
-            </View>
-          ),
-        }}
-      />
-      <Tabs.Screen
         name="statistiques"
         options={{
+          href: null,
           title: t('statisticsTab'),
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="stats-chart" size={size} color={color} />
+            <Ionicons name="bar-chart" size={size} color={color} />
           ),
         }}
       />
       <Tabs.Screen
-        name="settings"
+        name="profile"
         options={{
-          title: t('settingsTab'),
+          title: t('profile'),
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="settings" size={size} color={color} />
+            <Ionicons name="person" size={size} color={color} />
           ),
         }}
       />
-      <Tabs.Screen name="index" options={{ href: null }} />
+      <Tabs.Screen name="settings" options={{ href: null }} />
       <Tabs.Screen name="analytics" options={{ href: null }} />
-      <Tabs.Screen name="profile" options={{ href: null }} />
       <Tabs.Screen name="quality-report" options={{ href: null }} />
     </Tabs>
   );

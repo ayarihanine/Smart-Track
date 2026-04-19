@@ -7,10 +7,12 @@ import { colors, spacing, typography, borderRadius, shadows } from '@/constants/
 import { useTheme } from '@/components/ThemeProvider';
 import { getSupabaseClient } from '@/lib/supabase';
 import { UserProfile } from '@/types';
+import { useRoleGuard } from '@/hooks/useRoleGuard';
 
 type SortOption = 'name' | 'role' | 'newest';
 
 export default function AdminPanelScreen() {
+  useRoleGuard(['admin']);
   const { palette } = useTheme();
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [isLoading, setIsLoading] = useState(true);

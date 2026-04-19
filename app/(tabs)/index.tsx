@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
+import { LinearGradient } from 'expo-linear-gradient';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
 import { useAuthStore } from '@/store/authStore';
 import { useTranslation } from '@/hooks/useTranslation';
@@ -23,7 +24,6 @@ import { getCards, getAnalytics } from '@/lib/api';
 import { getSupabaseClient } from '@/lib/supabase';
 import { ElectronicCard, UserRole } from '@/types';
 import { SearchModal } from '@/components/SearchModal';
-import { AlertsBanner } from '@/components/AlertsBanner';
 import { useAlertsStore } from '@/store/alertsStore';
 import { useSettingsStore } from '@/store/settingsStore';
 
@@ -61,22 +61,33 @@ function CardListItem({ card, onPress, onMorePress, palette, primaryColor }: { c
   };
 
   return (
-    <TouchableOpacity style={[styles.cardItem, { backgroundColor: palette.background, borderColor: palette.border }]} onPress={onPress} activeOpacity={0.7}>
+    <TouchableOpacity 
+      style={[styles.cardItem, { backgroundColor: palette.background, borderColor: palette.border }]} 
+      onPress={onPress} 
+      activeOpacity={0.7}
+    >
       <View style={styles.cardItemLeft}>
-        <View style={[styles.stageProgress, { borderColor: stageColor }]}>
+        <View style={[styles.stageProgress, { borderColor: palette.border }]}>
           <View style={[styles.stageProgressFill, {
-            borderColor: stageColor,
-            borderTopColor: 'transparent',
-            transform: [{ rotate: `${(card.progressPercent / 100) * 360}deg` }],
+            borderTopColor: stageColor,
+            borderRightColor: card.progressPercent > 25 ? stageColor : 'transparent',
+            borderBottomColor: card.progressPercent > 50 ? stageColor : 'transparent',
+            borderLeftColor: card.progressPercent > 75 ? stageColor : 'transparent',
           }]} />
+          <Ionicons name="hardware-chip-outline" size={16} color={stageColor} />
         </View>
         <View style={styles.cardItemInfo}>
-          <Text style={[styles.cardItemId, { color: palette.text }]}>{card.cardId}</Text>
-          <Text style={styles.cardItemStage}>
-            <Text style={{ color: stageColor, fontWeight: '600' }}>{card.currentStage}</Text>
+          <View style={styles.cardItemHeader}>
+            <Text style={[styles.cardItemId, { color: palette.text }]}>{card.cardId}</Text>
+            <View style={[styles.statusBadge, { backgroundColor: stageColor + '15', borderColor: stageColor + '30' }]}>
+              <Text style={[styles.statusBadgeText, { color: stageColor }]}>{stageName}</Text>
+            </View>
+          </View>
+          <Text style={[styles.cardItemMeta, { color: palette.textTertiary }]}>
+            <Ionicons name="location-outline" size={12} color={palette.textTertiary} /> {card.currentLocation} · {getTimeAgo(card.updatedAt)}
           </Text>
-          <Text style={[styles.cardItemMeta, { color: palette.textTertiary }]}>{card.currentLocation} · {getTimeAgo(card.updatedAt)}</Text>
         </View>
+        <Ionicons name="chevron-forward" size={18} color={palette.textDisabled} />
       </View>
     </TouchableOpacity>
   );
@@ -121,7 +132,8 @@ export default function HomeScreen() {
   const scrollY = useRef(new Animated.Value(0)).current;
   const [searchOpen, setSearchOpen] = useState(false);
   const [isMainMenuVisible, setMainMenuVisible] = useState(false);
-  const { checkStuckCards } = useAlertsStore();
+  const { alerts, checkStuckCards } = useAlertsStore();
+  const unreadAlertsCount = alerts.filter(a => !a.dismissed).length;
   const stuckThreshold = useSettingsStore(s => s.stuckCardThresholdHours);
 
   const { data: cards, isLoading: cardsLoading, refetch } = useQuery({
@@ -204,14 +216,18 @@ export default function HomeScreen() {
         refreshControl={<RefreshControl refreshing={cardsLoading} onRefresh={refetch} tintColor={palette.primary} />}
       >
         {/* Header */}
-        <Animated.View style={[styles.header, { opacity: headerOpacity, backgroundColor: palette.background, borderBottomColor: palette.border }]}>
+        <Animated.View style={[styles.header, { opacity: headerOpacity }]}>
+          <LinearGradient
+            colors={isDark ? ['#1E293B', '#0F172A'] : ['#FFFFFF', '#F8FAFC']}
+            style={StyleSheet.absoluteFill}
+          />
           <View style={styles.headerLeft}>
             <TouchableOpacity style={styles.menuBtn} onPress={() => setMainMenuVisible(true)}>
               <Ionicons name="menu" size={24} color={palette.text} />
             </TouchableOpacity>
             <View>
-              <Text style={[styles.greeting, { color: palette.textSecondary }]}>{getGreetingText()},</Text>
-              <Text style={[styles.userName, { color: palette.text }]}>{user?.displayName}</Text>
+              <Text style={[styles.userName, { color: palette.text }]}>CardTrack</Text>
+              <Text style={[styles.greeting, { color: palette.textSecondary }]}>{getGreetingText()}, {user?.displayName}</Text>
             </View>
           </View>
           <View style={styles.headerRight}>
@@ -223,11 +239,9 @@ export default function HomeScreen() {
             <TouchableOpacity style={styles.searchBtn} onPress={() => router.push('/notifications')}>
               <View>
                 <Ionicons name="notifications-outline" size={24} color={palette.text} />
-                {(cards || []).filter(c => c.status !== 'completed' && (Date.now() - new Date(c.updatedAt).getTime()) > thresholdMs).length > 0 && (
+                {unreadAlertsCount > 0 && (
                   <View style={styles.bellBadge}>
-                    <Text style={styles.bellBadgeText}>
-                      {(cards || []).filter(c => c.status !== 'completed' && (Date.now() - new Date(c.updatedAt).getTime()) > thresholdMs).length}
-                    </Text>
+                    <Text style={styles.bellBadgeText}>{unreadAlertsCount}</Text>
                   </View>
                 )}
               </View>
@@ -249,31 +263,39 @@ export default function HomeScreen() {
           </View>
         </Animated.View>
 
+
+
         {/* Stats Row */}
         <AnimatedReanimated.View
           entering={FadeInDown.duration(800).delay(200)}
-          style={[styles.statsRow, { backgroundColor: palette.background }]}
+          style={styles.statsRow}
         >
-          <View style={[styles.statCard, { backgroundColor: isDark ? '#064e3b' : '#F0FDF4' }]}>
-            <View style={[styles.statIcon, { backgroundColor: palette.background }]}>
-              <Ionicons name="checkmark-circle" size={28} color="#10B981" />
+          <View style={[styles.statCard, { backgroundColor: palette.background, borderColor: palette.border, borderWidth: 1 }]}>
+            <View style={[styles.statIcon, { backgroundColor: isDark ? '#1e3a8a' : '#EFF6FF' }]}>
+              <Ionicons name="apps" size={24} color={palette.primary} />
             </View>
-            <Text style={[styles.statValue, { color: palette.text }]}>{completedCount}</Text>
-            <Text style={[styles.statLabel, { color: palette.textSecondary }]}>{t('completed')}</Text>
+            <View style={styles.statInfo}>
+              <Text style={[styles.statValue, { color: palette.text }]}>{totalCount}</Text>
+              <Text style={[styles.statLabel, { color: palette.textSecondary }]}>{t('total')}</Text>
+            </View>
           </View>
-          <View style={[styles.statCard, { backgroundColor: isDark ? '#1e3a8a' : '#EFF6FF' }]}>
-            <View style={[styles.statIcon, { backgroundColor: palette.background }]}>
-              <Ionicons name="settings" size={28} color={palette.primary} />
+          <View style={[styles.statCard, { backgroundColor: palette.background, borderColor: palette.border, borderWidth: 1 }]}>
+            <View style={[styles.statIcon, { backgroundColor: isDark ? '#312e81' : '#EEF2FF' }]}>
+              <Ionicons name="sync" size={24} color="#8B5CF6" />
             </View>
-            <Text style={[styles.statValue, { color: palette.text }]}>{inProgressCount}</Text>
-            <Text style={[styles.statLabel, { color: palette.textSecondary }]}>{t('inProgress')}</Text>
+            <View style={styles.statInfo}>
+              <Text style={[styles.statValue, { color: palette.text }]}>{inProgressCount}</Text>
+              <Text style={[styles.statLabel, { color: palette.textSecondary }]}>{t('inProgress')}</Text>
+            </View>
           </View>
-          <View style={[styles.statCard, { backgroundColor: palette.backgroundTertiary }]}>
-            <View style={[styles.statIcon, { backgroundColor: palette.background }]}>
-              <Ionicons name="layers" size={28} color={palette.textSecondary} />
+          <View style={[styles.statCard, { backgroundColor: palette.background, borderColor: palette.border, borderWidth: 1 }]}>
+            <View style={[styles.statIcon, { backgroundColor: isDark ? '#064e3b' : '#F0FDF4' }]}>
+              <Ionicons name="checkmark-circle" size={24} color="#10B981" />
             </View>
-            <Text style={[styles.statValue, { color: palette.text }]}>{totalCount}</Text>
-            <Text style={[styles.statLabel, { color: palette.textSecondary }]}>{t('total')}</Text>
+            <View style={styles.statInfo}>
+              <Text style={[styles.statValue, { color: palette.text }]}>{completedCount}</Text>
+              <Text style={[styles.statLabel, { color: palette.textSecondary }]}>{t('completed')}</Text>
+            </View>
           </View>
         </AnimatedReanimated.View>
 
@@ -284,42 +306,31 @@ export default function HomeScreen() {
         >
           <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('quickActions')}</Text>
           <View style={[styles.actionsRow, { backgroundColor: palette.background }]}>
-            {(user?.role === 'admin') && (
-              <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/system-status')} activeOpacity={0.8}>
-                <AnimatedIcon index={0}>
-                  <View style={[styles.actionIcon, { backgroundColor: isDark ? '#4c1d95' : '#EDE9FE', borderColor: isDark ? '#6d28d9' : '#DDD6FE' }]}>
-                    <Ionicons name="pulse" size={24} color="#8B5CF6" />
-                  </View>
-                </AnimatedIcon>
-                <Text style={[styles.actionLabel, { color: palette.textSecondary }]} numberOfLines={2} adjustsFontSizeToFit>{t('system')}</Text>
-              </TouchableOpacity>
-            )}
+            <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/production-map')} activeOpacity={0.8}>
+              <AnimatedIcon index={0}>
+                <LinearGradient
+                  colors={isDark ? ['#1e40af', '#1e3a8a'] : ['#DBEAFE', '#BFDBFE']}
+                  style={styles.actionIcon}
+                >
+                  <Ionicons name="map" size={24} color="#2563EB" />
+                </LinearGradient>
+              </AnimatedIcon>
+              <Text style={[styles.actionLabel, { color: palette.textSecondary }]} numberOfLines={2} adjustsFontSizeToFit>{t('productionMap')}</Text>
+            </TouchableOpacity>
+
             {(user?.role === 'supervisor' || user?.role === 'admin') && (
               <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/activity-feed' as any)} activeOpacity={0.8}>
                 <AnimatedIcon index={1}>
-                  <View style={[styles.actionIcon, { backgroundColor: isDark ? '#064e3b' : '#D1FAE5', borderColor: isDark ? '#065f46' : '#A7F3D0' }]}>
+                  <LinearGradient
+                    colors={isDark ? ['#059669', '#065f46'] : ['#D1FAE5', '#A7F3D0']}
+                    style={styles.actionIcon}
+                  >
                     <Ionicons name="list" size={24} color="#10B981" />
-                  </View>
+                  </LinearGradient>
                 </AnimatedIcon>
                 <Text style={[styles.actionLabel, { color: palette.textSecondary }]} numberOfLines={2} adjustsFontSizeToFit>{t('activity')}</Text>
               </TouchableOpacity>
             )}
-            <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/leaderboard')} activeOpacity={0.8}>
-              <AnimatedIcon index={2}>
-                <View style={[styles.actionIcon, { backgroundColor: isDark ? '#422006' : '#FEF3C7', borderColor: isDark ? '#713f12' : '#FDE68A' }]}>
-                  <Ionicons name="trophy" size={24} color="#D97706" />
-                </View>
-              </AnimatedIcon>
-              <Text style={[styles.actionLabel, { color: palette.textSecondary }]} numberOfLines={2} adjustsFontSizeToFit>{t('rankings')}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/ai-assistant' as any)} activeOpacity={0.8}>
-              <AnimatedIcon index={3}>
-                <View style={[styles.actionIcon, { backgroundColor: isDark ? '#1e3a8a' : '#DBEAFE', borderColor: isDark ? '#1e40af' : '#BFDBFE' }]}>
-                  <Ionicons name="sparkles" size={24} color="#3B82F6" />
-                </View>
-              </AnimatedIcon>
-              <Text style={[styles.actionLabel, { color: palette.textSecondary }]} numberOfLines={2} adjustsFontSizeToFit>{t('aiAssistant')}</Text>
-            </TouchableOpacity>
           </View>
         </AnimatedReanimated.View>
 
@@ -413,24 +424,7 @@ export default function HomeScreen() {
 
             <View style={styles.sheetContent}>
               {/* NEW FEATURES */}
-              {(user?.role === 'supervisor' || user?.role === 'admin') && (
-                <TouchableOpacity
-                  style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
-                  onPress={() => {
-                    setMainMenuVisible(false);
-                    router.push('/scanner-log' as any);
-                  }}
-                >
-                  <View style={[styles.sheetActionIcon, { backgroundColor: '#DBEAFE' }]}>
-                    <Ionicons name="list" size={20} color="#2563EB" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('liveScannerLog') || 'Live Scanner Log'}</Text>
-                    <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>{t('liveScannerLogDesc') || 'Real-time hardware feed'}</Text>
-                  </View>
-                  <View style={styles.newBadge}><Text style={styles.newBadgeText}>NEW</Text></View>
-                </TouchableOpacity>
-              )}
+
 
               {user?.role === 'admin' && (
                 <TouchableOpacity
@@ -451,22 +445,7 @@ export default function HomeScreen() {
                 </TouchableOpacity>
               )}
 
-              <TouchableOpacity
-                style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
-                onPress={() => {
-                  setMainMenuVisible(false);
-                  router.push('/messenger' as any);
-                }}
-              >
-                <View style={[styles.sheetActionIcon, { backgroundColor: '#E0E7FF' }]}>
-                  <Ionicons name="people" size={20} color="#4F46E5" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('teamMessenger') || 'Team Messenger'}</Text>
-                  <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>{t('teamMessengerDesc') || 'Chat with operators & supervisors'}</Text>
-                </View>
-                <View style={styles.newBadge}><Text style={styles.newBadgeText}>NEW</Text></View>
-              </TouchableOpacity>
+
 
               <TouchableOpacity
                 style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
@@ -579,7 +558,7 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
-    borderBottomWidth: 1,
+    borderBottomWidth: 0,
   },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
@@ -601,12 +580,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
   },
   statCard: {
-    flex: 1, padding: spacing.md, borderRadius: borderRadius.lg,
-    alignItems: 'center', gap: spacing.xs,
+    flex: 1, padding: spacing.sm, borderRadius: borderRadius.xl,
+    flexDirection: 'column', alignItems: 'center', gap: 6,
+    ...shadows.xs,
   },
-  statIcon: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', ...shadows.xs },
-  statValue: { ...typography.h2 },
-  statLabel: { ...typography.small },
+  statIcon: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  statInfo: { alignItems: 'center' },
+  statValue: { ...typography.bodyBold, fontSize: 16, textAlign: 'center' },
+  statLabel: { ...typography.tiny, fontWeight: '700', textTransform: 'uppercase', textAlign: 'center', fontSize: 9 },
   section: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md },
   sectionTitle: { ...typography.h4 },
@@ -618,12 +599,13 @@ const styles = StyleSheet.create({
   },
   actionBtn: { flex: 1, alignItems: 'center', gap: spacing.xs },
   actionIcon: {
-    width: 52, height: 52, borderRadius: borderRadius.lg,
+    width: 52, height: 52, borderRadius: borderRadius.xl,
     alignItems: 'center', justifyContent: 'center',
-    borderBottomWidth: 4, borderRightWidth: 1.5,
-    borderWidth: 1,
     ...shadows.sm,
   },
+  cardItemHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  statusBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, borderWidth: 1 },
+  statusBadgeText: { ...typography.tiny, fontWeight: '700' },
   actionLabel: { ...typography.small, fontWeight: '600', textAlign: 'center', width: '100%' },
   sectionSubtitle: { ...typography.small },
   bellBadge: {
