@@ -8,6 +8,7 @@ import { useSettingsStore } from '@/store/settingsStore';
 import { ThemeProvider, useTheme } from '@/components/ThemeProvider';
 import { useTranslation } from '@/hooks/useTranslation';
 import { OfflineBanner } from '@/components/OfflineBanner';
+import { useNotifications } from '@/hooks/useNotifications';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -111,12 +112,7 @@ function RootNavigator() {
           headerTintColor: '#fff',
         }}
       />
-      <Stack.Screen
-        name="production-map"
-        options={{
-          headerShown: false,
-        }}
-      />
+
       <Stack.Screen
         name="issues"
         options={{
@@ -132,6 +128,7 @@ function RootNavigator() {
 
 export default function RootLayout() {
   useFrameworkReady();
+  useNotifications();
 
   return (
     <QueryClientProvider client={queryClient}>

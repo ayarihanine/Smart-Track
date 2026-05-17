@@ -1,22 +1,85 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList,
-  Modal, Pressable,
+  Modal, Pressable, Alert, Animated, RefreshControl
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
-import { getCards } from '@/lib/api';
+import { getCards, deleteCard } from '@/lib/api';
 import { ElectronicCard, FilterOptions } from '@/types';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
 
+function CardRow({ 
+  card, 
+  onPress, 
+  onDelete, 
+  palette, 
+  t, 
+  formatDate, 
+  formatTime,
+  stages
+}: { 
+  card: ElectronicCard; 
+  onPress: () => void; 
+  onDelete: () => void;
+  palette: any;
+  t: any;
+  formatDate: (d: string) => string;
+  formatTime: (d: string) => string;
+  stages: any[];
+}) {
+  const { isDark } = useTheme();
+  const stageName = card.currentStage?.split(':')[1]?.trim() || card.currentStage || 'Unknown';
+  const stageColor = stages.find(s => stageName.includes(s.value))?.color || '#6B7280';
+  const isCompleted = card.status === 'completed';
+
+  return (
+    <Animated.View style={styles.cardRowWrapper}>
+      <TouchableOpacity 
+        style={[styles.cardItem, { backgroundColor: palette.background, borderColor: palette.border }]} 
+        onPress={onPress} 
+        activeOpacity={0.8}
+      >
+        <LinearGradient
+          colors={isDark ? ['#1e293b', '#0f172a'] : ['#FFFFFF', '#F9FAFB']}
+          style={StyleSheet.absoluteFill}
+        />
+        <View style={styles.cardItemInner}>
+          <View style={[styles.cardIconBox, { backgroundColor: stageColor + '12' }]}>
+            <Ionicons name={isCompleted ? "shield-checkmark" : "hardware-chip-outline"} size={20} color={stageColor} />
+          </View>
+          
+          <View style={styles.cardMainInfo}>
+            <View style={styles.cardIdRow}>
+              <Text style={[styles.cardIdText, { color: palette.text }]}>{card.cardId}</Text>
+              <View style={[styles.stageBadge, { backgroundColor: stageColor + '12', borderColor: stageColor + '30' }]}>
+                <Text style={[styles.stageBadgeText, { color: stageColor }]}>{stageName}</Text>
+              </View>
+            </View>
+            <Text style={[styles.cardTimeText, { color: palette.textTertiary }]}>
+              {formatDate(card.updatedAt)} · {formatTime(card.updatedAt)}
+            </Text>
+          </View>
+
+          <TouchableOpacity style={styles.trashBtn} onPress={onDelete} activeOpacity={0.6}>
+            <View style={[styles.trashIconBox, { backgroundColor: isDark ? '#450a0a' : '#FEF2F2' }]}>
+              <Ionicons name="trash-outline" size={18} color="#EF4444" />
+            </View>
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </Animated.View>
+  );
+}
 
 export default function HistoryScreen() {
   const { t, language } = useTranslation();
-  const { palette } = useTheme();
+  const { palette, isDark } = useTheme();
   const [showFilter, setShowFilter] = useState(false);
   const [filters, setFilters] = useState<FilterOptions>({
     stages: [],
@@ -25,22 +88,30 @@ export default function HistoryScreen() {
   const [tempFilters, setTempFilters] = useState<FilterOptions>(filters);
 
   const STAGES: { value: string; label: string; color: string }[] = [
-    { value: 'Assembly', label: t('assembly'), color: palette.primary },
-    { value: 'Testing', label: t('testing'), color: '#D97706' },
-    { value: 'Packaging', label: t('packaging'), color: '#EA580C' },
-    { value: 'Shipping', label: t('shipping'), color: '#10B981' },
+    { value: 'SMT', label: 'SMT', color: '#10B981' },
+    { value: 'THT', label: 'THT', color: '#2563EB' },
+    { value: 'Assembly', label: t('assembly' as any), color: palette.primary },
+    { value: 'QC', label: 'QC', color: '#8B5CF6' },
+    { value: 'Packaging', label: t('packaging' as any), color: '#EA580C' },
+    { value: 'Shipping', label: t('shipping' as any), color: '#10B981' },
   ];
 
   const SORT_OPTIONS = [
-    { value: 'recent', label: t('recentScans') },
-    { value: 'stage_order', label: t('stageOrder') },
-    { value: 'id_asc', label: t('idAsc') },
+    { value: 'recent', label: t('recentScans' as any) },
+    { value: 'id_asc', label: t('idAsc' as any) },
   ];
 
-  const { data: cards = [], refetch } = useQuery({
+  const { data: cards = [], refetch, isLoading, isRefetching } = useQuery({
     queryKey: ['cards', filters],
     queryFn: () => getCards(filters),
   });
+
+  // Automatically refetch when the screen is focused to solve "nothing appears" bug
+  useFocusEffect(
+    useCallback(() => {
+      refetch();
+    }, [refetch])
+  );
 
   const completedCount = cards.filter(c => c.status === 'completed').length;
   const inProgressCount = cards.filter(c => c.status === 'in_progress').length;
@@ -74,12 +145,11 @@ export default function HistoryScreen() {
   function formatDate(d: string) {
     const date = new Date(d);
     const today = new Date();
-    if (date.toDateString() === today.toDateString()) return t('today');
+    if (date.toDateString() === today.toDateString()) return t('today' as any);
     const yesterday = new Date(today);
     yesterday.setDate(today.getDate() - 1);
-    if (date.toDateString() === yesterday.toDateString()) return t('yesterday');
+    if (date.toDateString() === yesterday.toDateString()) return t('yesterday' as any);
 
-    // Fallback to localized weekday or simple date
     const options: Intl.DateTimeFormatOptions = { weekday: 'long' };
     try {
       return new Intl.DateTimeFormat(language === 'ar' ? 'ar-SA' : language === 'fr' ? 'fr-FR' : 'en-US', options).format(date);
@@ -92,89 +162,136 @@ export default function HistoryScreen() {
     return new Date(d).toLocaleTimeString(language === 'ar' ? 'ar-SA' : language === 'fr' ? 'fr-FR' : 'en-US', { hour: '2-digit', minute: '2-digit' });
   }
 
-  function CardRow({ card, onPress }: { card: ElectronicCard; onPress: () => void }) {
-    const stageName = card.currentStage?.split(':')[1]?.trim() || card.currentStage || 'Unknown';
-    const stageColor = STAGES.find(s => stageName.includes(s.value))?.color || '#6B7280';
-
-    return (
-      <TouchableOpacity style={styles.cardRow} onPress={onPress} activeOpacity={0.7}>
-        <View style={styles.cardRowLeft}>
-          <Text style={styles.cardRowId}>{card.cardId}</Text>
-          <Text style={styles.cardRowTime}>
-            {formatDate(card.updatedAt)} {t('at')} {formatTime(card.updatedAt)}
-          </Text>
-        </View>
-        <View style={[styles.stagePill, { backgroundColor: stageColor }]}>
-          {card.status === 'completed' && (
-            <Ionicons name="checkmark" size={12} color={colors.white} style={{ marginRight: 2 }} />
-          )}
-          <Text style={styles.stagePillText}>{stageName}</Text>
-        </View>
-      </TouchableOpacity>
+  async function handleDelete(cardId: string) {
+    Alert.alert(
+      t('deleteCard' as any) || 'Delete Card',
+      t('deleteCardConfirm' as any) || 'Are you sure you want to delete this card?',
+      [
+        { text: t('cancel' as any), style: 'cancel' },
+        { 
+          text: t('delete' as any), 
+          style: 'destructive',
+          onPress: async () => {
+            const success = await deleteCard(cardId);
+            if (success) {
+              refetch();
+            } else {
+              Alert.alert(t('error' as any), t('deleteFailed' as any));
+            }
+          }
+        }
+      ]
     );
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={[styles.container, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
       {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>{t('recentCards')}</Text>
-        <TouchableOpacity onPress={() => refetch()}>
-          <Text style={[styles.clearBtn, { color: palette.primary }]}>{t('refresh')}</Text>
+      <View style={[styles.header, { backgroundColor: palette.background, borderBottomColor: palette.border }]}>
+        <View>
+          <Text style={[styles.headerTitle, { color: palette.text }]}>{t('recentCards' as any)}</Text>
+          <Text style={[styles.headerSubtitle, { color: palette.textTertiary }]}>{cards.length} {t('totalUnits' as any) || 'units tracked'}</Text>
+        </View>
+        <TouchableOpacity 
+          style={[styles.refreshBtn, { backgroundColor: palette.primary + '10' }]} 
+          onPress={() => refetch()} 
+          disabled={isRefetching}
+        >
+          <Ionicons 
+            name={isRefetching ? "sync" : "refresh"} 
+            size={20} 
+            color={palette.primary} 
+            style={isRefetching ? { transform: [{ rotate: '45deg' }] } : null}
+          />
         </TouchableOpacity>
       </View>
 
-      {/* Stats */}
-      <View style={styles.statsBar}>
-        <View style={styles.stat}>
-          <View style={[styles.statIcon, { backgroundColor: '#D1FAE5' }]}>
-            <Ionicons name="checkmark-circle" size={24} color="#10B981" />
+      {/* Stats Summary Card */}
+      <View style={styles.statsContainer}>
+        <LinearGradient
+          colors={isDark ? ['#1e293b', '#0f172a'] : ['#FFFFFF', '#F8FAFC']}
+          style={[styles.statsBar, { borderColor: palette.border }]}
+        >
+          <View style={styles.stat}>
+            <View style={[styles.statIcon, { backgroundColor: '#D1FAE5' }]}>
+              <Ionicons name="checkmark-circle" size={22} color="#10B981" />
+            </View>
+            <View>
+              <Text style={[styles.statValue, { color: palette.text }]}>{completedCount}</Text>
+              <Text style={[styles.statLabel, { color: palette.textSecondary }]}>{t('completed' as any)}</Text>
+            </View>
           </View>
-          <Text style={styles.statValue}>{completedCount}</Text>
-          <Text style={styles.statLabel}>{t('completed')}</Text>
-        </View>
-        <View style={styles.statDivider} />
-        <View style={styles.stat}>
-          <View style={[styles.statIcon, { backgroundColor: palette.primary + '18' }]}>
-            <Ionicons name="settings" size={24} color={palette.primary} />
+          <View style={[styles.statDivider, { backgroundColor: palette.border }]} />
+          <View style={styles.stat}>
+            <View style={[styles.statIcon, { backgroundColor: palette.primary + '18' }]}>
+              <Ionicons name="time" size={22} color={palette.primary} />
+            </View>
+            <View>
+              <Text style={[styles.statValue, { color: palette.text }]}>{inProgressCount}</Text>
+              <Text style={[styles.statLabel, { color: palette.textSecondary }]}>{t('inProgress' as any)}</Text>
+            </View>
           </View>
-          <Text style={[styles.statValue, { color: palette.text }]}>{inProgressCount}</Text>
-          <Text style={[styles.statLabel, { color: palette.textSecondary }]}>{t('inProgress')}</Text>
-        </View>
-        <View style={styles.statDivider} />
-        <View style={styles.stat}>
-          <View style={[styles.statIcon, { backgroundColor: colors.backgroundTertiary }]}>
-            <Ionicons name="layers" size={24} color={colors.textSecondary} />
-          </View>
-          <Text style={styles.statValue}>{cards.length}</Text>
-          <Text style={styles.statLabel}>{t('total')}</Text>
-        </View>
+        </LinearGradient>
       </View>
 
-      {/* Filter button */}
-      <TouchableOpacity style={styles.filterRow} onPress={openFilter} activeOpacity={0.8}>
-        <Ionicons name="options" size={20} color={palette.primary} />
-        <Text style={[styles.filterText, { color: palette.primary }]}>{t('filterSort')}</Text>
-        {(filters.stages?.length || 0) > 0 && (
-          <View style={[styles.filterBadge, { backgroundColor: palette.primary }]}>
-            <Text style={styles.filterBadgeText}>{filters.stages?.length}</Text>
+      {/* Filter Row */}
+      <View style={styles.filterContainer}>
+        <TouchableOpacity 
+          style={[styles.filterBtn, { backgroundColor: palette.background, borderColor: palette.border }]} 
+          onPress={openFilter} 
+          activeOpacity={0.8}
+        >
+          <View style={styles.filterBtnLeft}>
+            <Ionicons name="options-outline" size={18} color={palette.primary} />
+            <Text style={[styles.filterBtnText, { color: palette.text }]}>{t('filterSort' as any)}</Text>
           </View>
-        )}
-      </TouchableOpacity>
+          {(filters.stages?.length || 0) > 0 && (
+            <View style={[styles.filterBadge, { backgroundColor: palette.primary }]}>
+              <Text style={styles.filterBadgeText}>{filters.stages?.length}</Text>
+            </View>
+          )}
+          <Ionicons name="chevron-down" size={16} color={palette.textTertiary} />
+        </TouchableOpacity>
+      </View>
 
       {/* List */}
       <FlatList
         data={cards}
         keyExtractor={item => item.id}
         renderItem={({ item }) => (
-          <CardRow card={item} onPress={() => router.push(`/card/${item.cardId}`)} />
+          <CardRow 
+            card={item} 
+            onPress={() => router.push(`/card/${item.cardId}`)} 
+            onDelete={() => handleDelete(item.cardId)}
+            palette={palette}
+            t={t}
+            formatDate={formatDate}
+            formatTime={formatTime}
+            stages={STAGES}
+          />
         )}
+        refreshControl={
+          <RefreshControl 
+            refreshing={isRefetching} 
+            onRefresh={refetch} 
+            tintColor={palette.primary}
+            colors={[palette.primary]}
+          />
+        }
         ItemSeparatorComponent={() => <View style={styles.separator} />}
         ListEmptyComponent={
           <View style={styles.empty}>
-            <Ionicons name="time-outline" size={64} color={colors.border} />
-            <Text style={styles.emptyText}>{t('noCardsFound')}</Text>
-            <Text style={styles.emptySubtext}>{t('scanToSeeHere')}</Text>
+            <View style={[styles.emptyIconContainer, { backgroundColor: palette.background }]}>
+               <Ionicons name="layers-outline" size={48} color={palette.border} />
+            </View>
+            <Text style={[styles.emptyText, { color: palette.textSecondary }]}>{t('noCardsFound' as any)}</Text>
+            <Text style={[styles.emptySubtext, { color: palette.textTertiary }]}>{t('scanToSeeHere' as any)}</Text>
+            <TouchableOpacity 
+              style={[styles.emptyAction, { backgroundColor: palette.primary }]}
+              onPress={() => router.push('/(tabs)/scan')}
+            >
+              <Text style={styles.emptyActionText}>{t('startScanning' as any) || 'Start Scanning'}</Text>
+            </TouchableOpacity>
           </View>
         }
         contentContainerStyle={styles.listContent}
@@ -183,30 +300,36 @@ export default function HistoryScreen() {
       {/* Filter Modal */}
       <Modal visible={showFilter} animationType="slide" transparent>
         <Pressable style={styles.modalBackdrop} onPress={() => setShowFilter(false)}>
-          <Pressable style={styles.modalSheet} onPress={e => e.stopPropagation()}>
-            <View style={styles.modalHandle} />
+          <Pressable style={[styles.modalSheet, { backgroundColor: palette.backgroundSecondary }]} onPress={e => e.stopPropagation()}>
+            <View style={[styles.modalHandle, { backgroundColor: palette.border }]} />
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>{t('historyFilterSort')}</Text>
+              <View>
+                <Text style={[styles.modalTitle, { color: palette.text }]}>{t('historyFilterSort' as any)}</Text>
+                <Text style={[styles.modalSubtitle, { color: palette.textSecondary }]}>{t('customizeView' as any) || 'Customize your scan history view'}</Text>
+              </View>
               <TouchableOpacity onPress={() => setShowFilter(false)}>
-                <View style={styles.closeBtn}>
-                  <Ionicons name="close" size={20} color={colors.text} />
+                <View style={[styles.closeBtn, { backgroundColor: palette.background, borderColor: palette.border }]}>
+                  <Ionicons name="close" size={20} color={palette.text} />
                 </View>
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.filterSectionTitle}>{t('filterByStage')}</Text>
+            <Text style={[styles.filterSectionTitle, { color: palette.text }]}>{t('filterByStage' as any)}</Text>
             <View style={styles.stageRow}>
               {STAGES.map(s => {
                 const active = (tempFilters.stages || []).includes(s.value);
                 return (
                   <TouchableOpacity
                     key={s.value}
-                    style={[styles.stagePillFilter, { backgroundColor: active ? s.color : colors.backgroundTertiary }]}
+                    style={[styles.stagePillFilter, { 
+                      backgroundColor: active ? s.color : palette.background,
+                      borderColor: active ? s.color : palette.border,
+                      borderWidth: 1
+                    }]}
                     onPress={() => toggleStage(s.value)}
                     activeOpacity={0.8}
                   >
-                    {active && <Ionicons name="checkmark" size={14} color={colors.white} />}
-                    <Text style={[styles.stagePillFilterText, { color: active ? colors.white : colors.textSecondary }]}>
+                    <Text style={[styles.stagePillFilterText, { color: active ? colors.white : palette.textSecondary }]}>
                       {s.label}
                     </Text>
                   </TouchableOpacity>
@@ -214,19 +337,19 @@ export default function HistoryScreen() {
               })}
             </View>
 
-            <Text style={styles.filterSectionTitle}>{t('sortBy')}</Text>
-            <View style={styles.sortList}>
+            <Text style={[styles.filterSectionTitle, { color: palette.text }]}>{t('sortBy' as any)}</Text>
+            <View style={[styles.sortList, { backgroundColor: palette.background, borderColor: palette.border, borderWidth: 1 }]}>
               {SORT_OPTIONS.map((opt, idx) => (
                 <TouchableOpacity
                   key={opt.value}
-                  style={[styles.sortOption, idx < SORT_OPTIONS.length - 1 && styles.sortOptionBorder]}
+                  style={[styles.sortOption, idx < SORT_OPTIONS.length - 1 && [styles.sortOptionBorder, { borderBottomColor: palette.border }]]}
                   onPress={() => setTempFilters(prev => ({ ...prev, sortBy: opt.value as any }))}
                   activeOpacity={0.7}
                 >
-                  <View style={[styles.radio, tempFilters.sortBy === opt.value && styles.radioActive]}>
-                    {tempFilters.sortBy === opt.value && <View style={styles.radioInner} />}
+                  <View style={[styles.radio, { borderColor: palette.border }, tempFilters.sortBy === opt.value && [styles.radioActive, { borderColor: palette.primary }]]}>
+                    {tempFilters.sortBy === opt.value && <View style={[styles.radioInner, { backgroundColor: palette.primary }]} />}
                   </View>
-                  <Text style={styles.sortOptionText}>{opt.label}</Text>
+                  <Text style={[styles.sortOptionText, { color: palette.text }]}>{opt.label}</Text>
                   {tempFilters.sortBy === opt.value && (
                     <Ionicons name="checkmark" size={18} color={palette.primary} style={{ marginLeft: 'auto' }} />
                   )}
@@ -235,11 +358,11 @@ export default function HistoryScreen() {
             </View>
 
             <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.resetBtn} onPress={resetFilters} activeOpacity={0.8}>
-                <Text style={styles.resetBtnText}>{t('reset')}</Text>
+              <TouchableOpacity style={[styles.resetBtn, { backgroundColor: palette.background, borderColor: palette.border, borderWidth: 1 }]} onPress={resetFilters} activeOpacity={0.8}>
+                <Text style={[styles.resetBtnText, { color: palette.textSecondary }]}>{t('reset' as any)}</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[styles.applyBtn, { backgroundColor: palette.primary }]} onPress={applyFilters} activeOpacity={0.8}>
-                <Text style={styles.applyBtnText}>{t('applyFilters')}</Text>
+                <Text style={styles.applyBtnText}>{t('applyFilters' as any)}</Text>
               </TouchableOpacity>
             </View>
           </Pressable>
@@ -250,94 +373,165 @@ export default function HistoryScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.backgroundSecondary },
+  container: { flex: 1 },
   header: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
-    backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.border,
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.lg,
+    borderBottomWidth: 1,
   },
-  headerTitle: { ...typography.h2 },
-  clearBtn: { ...typography.captionBold },
+  headerTitle: { ...typography.h3, fontSize: 22 },
+  headerSubtitle: { ...typography.tiny, marginTop: 2, fontWeight: '600' },
+  refreshBtn: {
+    width: 40, height: 40, borderRadius: 20,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  statsContainer: { paddingHorizontal: spacing.lg, marginTop: spacing.md },
   statsBar: {
-    flexDirection: 'row', backgroundColor: colors.white,
-    paddingVertical: spacing.md, paddingHorizontal: spacing.lg,
-    borderBottomWidth: 1, borderBottomColor: colors.border,
+    flexDirection: 'row', borderRadius: borderRadius.xl,
+    paddingVertical: spacing.md, paddingHorizontal: spacing.md,
+    borderWidth: 1, ...shadows.sm,
   },
-  stat: { flex: 1, alignItems: 'center', gap: spacing.xs },
-  statIcon: { width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
-  statValue: { ...typography.h3, color: colors.text },
-  statLabel: { ...typography.small, color: colors.textSecondary },
-  statDivider: { width: 1, backgroundColor: colors.border, marginVertical: spacing.sm },
-  filterRow: {
-    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
-    paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
-    backgroundColor: colors.white, marginBottom: 2,
+  stat: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingLeft: spacing.xs },
+  statIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  statValue: { ...typography.bodyBold, fontSize: 18 },
+  statLabel: { ...typography.tiny, fontWeight: '700', textTransform: 'uppercase', fontSize: 9 },
+  statDivider: { width: 1, height: '70%', alignSelf: 'center', marginHorizontal: spacing.sm },
+  filterContainer: { paddingHorizontal: spacing.lg, marginVertical: spacing.md },
+  filterBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+    borderRadius: borderRadius.lg, borderWidth: 1, ...shadows.xs,
   },
-  filterText: { ...typography.captionBold, color: colors.primary, flex: 1 },
+  filterBtnLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  filterBtnText: { ...typography.smallBold },
   filterBadge: {
-    backgroundColor: colors.primary, width: 20, height: 20,
-    borderRadius: 10, alignItems: 'center', justifyContent: 'center',
+    width: 20, height: 20, borderRadius: 10,
+    alignItems: 'center', justifyContent: 'center',
+    marginHorizontal: spacing.xs,
   },
-  filterBadgeText: { ...typography.tiny, color: colors.white, fontWeight: '700' },
+  filterBadgeText: { ...typography.tiny, color: colors.white, fontWeight: '800' },
   listContent: { paddingHorizontal: spacing.lg, paddingBottom: spacing.xl },
-  separator: { height: 1, backgroundColor: colors.border },
-  cardRow: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingVertical: spacing.md, backgroundColor: colors.white,
+  separator: { height: spacing.xs },
+  cardRowWrapper: { marginBottom: spacing.xs },
+  cardItem: {
+    borderRadius: borderRadius.xl,
+    overflow: 'hidden',
+    borderWidth: 1,
+    minHeight: 80,
+    ...shadows.sm,
   },
-  cardRowLeft: { gap: 4 },
-  cardRowId: { ...typography.bodyBold, color: colors.text },
-  cardRowTime: { ...typography.small, color: colors.textSecondary },
-  stagePill: {
-    flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: spacing.sm, paddingVertical: 6, borderRadius: borderRadius.full,
+  cardItemInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing.md,
+    gap: spacing.md,
   },
-  stagePillText: { ...typography.small, color: colors.white, fontWeight: '700' },
-  empty: { alignItems: 'center', paddingVertical: spacing.xxxl, gap: spacing.sm },
-  emptyText: { ...typography.body, color: colors.textSecondary },
-  emptySubtext: { ...typography.small, color: colors.textTertiary },
+  cardIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardMainInfo: {
+    flex: 1,
+    gap: 4,
+  },
+  cardIdRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 2,
+  },
+  cardIdText: {
+    ...typography.bodyBold,
+    fontSize: 16,
+  },
+  stageBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  stageBadgeText: {
+    ...typography.tiny,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  cardTimeText: {
+    ...typography.small,
+  },
+  trashBtn: {
+    paddingLeft: spacing.sm,
+  },
+  trashIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  empty: { alignItems: 'center', paddingVertical: spacing.xxxl, gap: spacing.md },
+  emptyIconContainer: { 
+    width: 80, height: 80, borderRadius: 40, 
+    alignItems: 'center', justifyContent: 'center',
+    marginBottom: spacing.sm,
+    ...shadows.sm,
+  },
+  emptyText: { ...typography.bodyBold, fontSize: 18 },
+  emptySubtext: { ...typography.body, textAlign: 'center', opacity: 0.7, paddingHorizontal: spacing.xl },
+  emptyAction: {
+    marginTop: spacing.lg,
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.md,
+    borderRadius: borderRadius.lg,
+    ...shadows.md,
+  },
+  emptyActionText: { ...typography.bodyBold, color: colors.white },
   // Modal
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   modalSheet: {
-    backgroundColor: colors.backgroundSecondary, borderTopLeftRadius: 24,
-    borderTopRightRadius: 24, padding: spacing.lg, paddingBottom: spacing.xxxl,
+    borderTopLeftRadius: 32,
+    borderTopRightRadius: 32, padding: spacing.xl, paddingBottom: spacing.xxxl,
+    ...shadows.lg,
   },
   modalHandle: {
-    width: 40, height: 4, backgroundColor: colors.border,
-    borderRadius: 2, alignSelf: 'center', marginBottom: spacing.md,
+    width: 40, height: 4, 
+    borderRadius: 2, alignSelf: 'center', marginBottom: spacing.lg,
   },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.lg },
-  modalTitle: { ...typography.h4, color: colors.text },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: spacing.xl },
+  modalTitle: { ...typography.h3 },
+  modalSubtitle: { ...typography.small, marginTop: 4 },
   closeBtn: {
-    width: 32, height: 32, borderRadius: 16,
-    backgroundColor: colors.backgroundTertiary, alignItems: 'center', justifyContent: 'center',
+    width: 36, height: 36, borderRadius: 18,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1,
   },
-  filterSectionTitle: { ...typography.captionBold, color: colors.text, marginBottom: spacing.sm, marginTop: spacing.md },
+  filterSectionTitle: { ...typography.captionBold, marginBottom: spacing.md, marginTop: spacing.lg, textTransform: 'uppercase', letterSpacing: 1 },
   stageRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.md },
   stagePillFilter: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: borderRadius.full,
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderRadius: borderRadius.lg,
   },
-  stagePillFilterText: { ...typography.captionBold },
-  sortList: { backgroundColor: colors.white, borderRadius: borderRadius.lg, marginBottom: spacing.lg },
-  sortOption: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, padding: spacing.md },
-  sortOptionBorder: { borderBottomWidth: 1, borderBottomColor: colors.border },
-  sortOptionText: { ...typography.body, color: colors.text, flex: 1 },
+  stagePillFilterText: { ...typography.smallBold },
+  sortList: { borderRadius: borderRadius.xl, marginBottom: spacing.xl, overflow: 'hidden' },
+  sortOption: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, padding: spacing.lg },
+  sortOptionBorder: { borderBottomWidth: 1 },
+  sortOptionText: { ...typography.body, flex: 1 },
   radio: {
-    width: 22, height: 22, borderRadius: 11, borderWidth: 2,
-    borderColor: colors.border, alignItems: 'center', justifyContent: 'center',
+    width: 24, height: 24, borderRadius: 12, borderWidth: 2,
+    alignItems: 'center', justifyContent: 'center',
   },
-  radioActive: { borderColor: colors.primary },
-  radioInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.primary },
-  modalActions: { flexDirection: 'row', gap: spacing.md },
+  radioActive: {},
+  radioInner: { width: 12, height: 12, borderRadius: 6 },
+  modalActions: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
   resetBtn: {
-    flex: 1, height: 52, borderRadius: borderRadius.md, alignItems: 'center',
-    justifyContent: 'center', backgroundColor: '#9E9E9E',
+    flex: 1, height: 56, borderRadius: borderRadius.xl, alignItems: 'center',
+    justifyContent: 'center',
   },
-  resetBtnText: { ...typography.bodyBold, color: colors.white },
+  resetBtnText: { ...typography.bodyBold },
   applyBtn: {
-    flex: 2, height: 52, borderRadius: borderRadius.md, alignItems: 'center',
-    justifyContent: 'center', backgroundColor: colors.primary, ...shadows.md,
+    flex: 2, height: 56, borderRadius: borderRadius.xl, alignItems: 'center',
+    justifyContent: 'center', ...shadows.md,
   },
   applyBtnText: { ...typography.bodyBold, color: colors.white },
 });

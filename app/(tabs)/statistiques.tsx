@@ -2,8 +2,11 @@ import React, { useMemo } from 'react';
 import { Dimensions, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BarChart } from 'react-native-chart-kit';
-import Svg, { Line, Rect, Text as SvgText } from 'react-native-svg';
+import Svg, { Line, Rect, Text as SvgText, Defs, LinearGradient as SvgGradient, Stop } from 'react-native-svg';
 import { useQuery } from '@tanstack/react-query';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
+import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 
 import { borderRadius, shadows, spacing, typography } from '../../constants/design';
 import { useTheme } from '../../components/ThemeProvider';
@@ -18,7 +21,7 @@ import { PerteParMachine, ProductionParJour, PerteParJour } from '../../types/pr
 
 const screenWidth = Dimensions.get('window').width;
 const LOSS_COLOR = '#EF4444';
-const SENSOR_COLORS = ['#2563EB', '#F59E0B', '#10B981'];
+const SENSOR_COLORS = ['#38BDF8', '#818CF8', '#34D399']; // Modern vibrant colors
 
 function dayLabel(value: string) {
   const date = new Date(value);
@@ -28,23 +31,34 @@ function dayLabel(value: string) {
 function ChartCard({
   title,
   palette,
+  isDark,
   children,
+  delay = 0,
 }: {
   title: string;
   palette: any;
+  isDark: boolean;
   children: React.ReactNode;
+  delay?: number;
 }) {
   return (
-    <View style={[styles.card, { backgroundColor: palette.background, borderColor: palette.border }]}>
-      <Text style={[styles.cardTitle, { color: palette.text }]}>{title}</Text>
+    <Animated.View 
+      entering={FadeInDown.delay(delay).duration(600).springify()}
+      style={[styles.card, { backgroundColor: palette.background, borderColor: palette.border, shadowColor: isDark ? '#38BDF8' : palette.border }]}
+    >
+      <View style={styles.cardHeader}>
+        <View style={[styles.cardTitleDot, { backgroundColor: isDark ? '#38BDF8' : '#2563eb' }]} />
+        <Text style={[styles.cardTitle, { color: palette.text }]}>{title}</Text>
+      </View>
       {children}
-    </View>
+    </Animated.View>
   );
 }
 
 function NoDataState({ text, palette }: { text: string; palette: any }) {
   return (
     <View style={styles.noDataState}>
+      <Ionicons name="bar-chart-outline" size={32} color={palette.border} style={{ marginBottom: 12 }} />
       <Text style={[styles.noDataText, { color: palette.textSecondary }]}>{text}</Text>
     </View>
   );
@@ -60,8 +74,8 @@ function SensorProductionChart({
   const chartHeight = 170;
   const labelHeight = 28;
   const leftPad = 24;
-  const groupWidth = 32;
-  const barWidth = 7;
+  const groupWidth = 36;
+  const barWidth = 8;
   const chartWidth = Math.max(screenWidth - spacing.lg * 4, data.length * groupWidth + leftPad + 16);
   const maxValue = Math.max(
     1,
@@ -69,15 +83,31 @@ function SensorProductionChart({
   );
 
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-      <Svg width={chartWidth} height={chartHeight + labelHeight}>
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginHorizontal: -spacing.md }}>
+      <Svg width={chartWidth} height={chartHeight + labelHeight} style={{ marginLeft: spacing.md }}>
+        <Defs>
+          <SvgGradient id="grad0" x1="0" y1="1" x2="0" y2="0">
+            <Stop offset="0" stopColor={SENSOR_COLORS[0]} stopOpacity="0.4" />
+            <Stop offset="1" stopColor={SENSOR_COLORS[0]} stopOpacity="1" />
+          </SvgGradient>
+          <SvgGradient id="grad1" x1="0" y1="1" x2="0" y2="0">
+            <Stop offset="0" stopColor={SENSOR_COLORS[1]} stopOpacity="0.4" />
+            <Stop offset="1" stopColor={SENSOR_COLORS[1]} stopOpacity="1" />
+          </SvgGradient>
+          <SvgGradient id="grad2" x1="0" y1="1" x2="0" y2="0">
+            <Stop offset="0" stopColor={SENSOR_COLORS[2]} stopOpacity="0.4" />
+            <Stop offset="1" stopColor={SENSOR_COLORS[2]} stopOpacity="1" />
+          </SvgGradient>
+        </Defs>
+
         <Line
           x1={leftPad}
           y1={chartHeight}
           x2={chartWidth - 12}
           y2={chartHeight}
           stroke={palette.border}
-          strokeWidth="1"
+          strokeWidth="2"
+          strokeLinecap="round"
         />
 
         {data.map((item, index) => {
@@ -87,24 +117,25 @@ function SensorProductionChart({
           return (
             <React.Fragment key={`${item.jour}-${index}`}>
               {values.map((value, seriesIndex) => {
-                const height = (value / maxValue) * (chartHeight - 12);
+                const height = Math.max(4, (value / maxValue) * (chartHeight - 16));
                 return (
                   <Rect
                     key={`${item.jour}-${seriesIndex}`}
-                    x={baseX + seriesIndex * (barWidth + 2)}
-                    y={chartHeight - height}
+                    x={baseX + seriesIndex * (barWidth + 3)}
+                    y={chartHeight - height - 1}
                     width={barWidth}
                     height={height}
-                    rx={2}
-                    fill={SENSOR_COLORS[seriesIndex]}
+                    rx={3}
+                    fill={`url(#grad${seriesIndex})`}
                   />
                 );
               })}
 
               <SvgText
-                x={baseX + barWidth + 3}
-                y={chartHeight + 16}
-                fontSize="10"
+                x={baseX + barWidth + 4}
+                y={chartHeight + 18}
+                fontSize="11"
+                fontWeight="600"
                 fill={palette.textSecondary}
                 textAnchor="middle"
               >
@@ -120,7 +151,7 @@ function SensorProductionChart({
 
 export default function StatisticsScreen() {
   const { t } = useTranslation();
-  const { palette } = useTheme();
+  const { palette, isDark } = useTheme();
 
   const lossesQuery = useQuery<PerteParJour[]>({
     queryKey: ['production', 'stats', 'losses-per-day'],
@@ -155,27 +186,55 @@ export default function StatisticsScreen() {
     };
   }, [lossesData]);
 
-  const lossesChartWidth = Math.max(screenWidth - spacing.lg * 4, (lossesChart?.labels.length || 0) * 48);
+  const lossesChartWidth = Math.max(screenWidth - spacing.lg * 4, (lossesChart?.labels.length || 0) * 52);
 
   const chartConfig = {
     backgroundGradientFrom: palette.background,
     backgroundGradientTo: palette.background,
+    backgroundGradientFromOpacity: 0,
+    backgroundGradientToOpacity: 0,
     decimalPlaces: 0,
-    color: () => LOSS_COLOR,
+    color: (opacity = 1) => `rgba(239, 68, 68, ${opacity})`,
     labelColor: () => palette.textSecondary,
     barPercentage: 0.6,
     fillShadowGradient: LOSS_COLOR,
-    fillShadowGradientOpacity: 1,
+    fillShadowGradientOpacity: 0.8,
+    fillShadowGradientFrom: '#EF4444',
+    fillShadowGradientTo: '#B91C1C',
     propsForBackgroundLines: {
       stroke: palette.border,
+      strokeDasharray: '4',
     },
     propsForLabels: {
-      fontSize: 10,
+      fontSize: 11,
+      fontWeight: '600',
     },
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
+    <View style={[styles.container, { backgroundColor: palette.backgroundSecondary }]}>
+      {/* Immersive Hero Header */}
+      <Animated.View entering={FadeInUp.duration(600).springify()} style={[styles.heroBanner, { shadowColor: isDark ? '#38BDF8' : palette.border, borderBottomColor: palette.border, borderBottomWidth: 1 }]}>
+        <LinearGradient
+          colors={isDark ? ['#0F172A', '#1E293B'] : [palette.background, palette.backgroundSecondary]}
+          style={StyleSheet.absoluteFill}
+          start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+        />
+        <View style={[styles.heroOrb, { backgroundColor: isDark ? '#38BDF8' : '#60a5fa', opacity: isDark ? 0.1 : 0.05 }]} />
+        
+        <SafeAreaView edges={['top']}>
+          <View style={styles.heroContent}>
+            <View style={styles.heroTitleRow}>
+              <Text style={[styles.heroTitle, { color: palette.text }]}>{t('statsTitle' as any) || 'Statistics'}</Text>
+              <View style={[styles.heroBadge, { backgroundColor: isDark ? 'rgba(56, 189, 248, 0.15)' : 'rgba(37, 99, 235, 0.1)', borderColor: isDark ? 'rgba(56, 189, 248, 0.3)' : 'rgba(37, 99, 235, 0.2)' }]}>
+                <Ionicons name="bar-chart" size={14} color={isDark ? '#38BDF8' : '#2563eb'} />
+                <Text style={[styles.heroBadgeText, { color: isDark ? '#38BDF8' : '#2563eb' }]}>Live Data</Text>
+              </View>
+            </View>
+          </View>
+        </SafeAreaView>
+      </Animated.View>
+
       <ScrollView
         contentContainerStyle={styles.content}
         refreshControl={
@@ -199,34 +258,68 @@ export default function StatisticsScreen() {
         }
         showsVerticalScrollIndicator={false}
       >
-        <View style={[styles.costBadge, { backgroundColor: palette.background, borderColor: palette.border }]}>
-          <Text style={[styles.costBadgeText, { color: palette.primary }]}>
-            {t('unitCostBadge').replace('{{cost}}', (costQuery.data ?? 0).toFixed(3))}
-          </Text>
-        </View>
+        <Animated.View entering={FadeInDown.delay(100).duration(600).springify()} style={[styles.unitCostCard, { borderColor: isDark ? '#1e40af' : '#bfdbfe', shadowColor: isDark ? '#38BDF8' : '#2563eb' }]}>
+          <LinearGradient
+            colors={isDark ? ['#1e3a8a', '#172554'] : ['#eff6ff', '#dbeafe']}
+            style={StyleSheet.absoluteFill}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+          />
+          {/* Glowing orb background effect */}
+          <View style={[styles.glowOrb, { backgroundColor: isDark ? '#38BDF8' : '#60a5fa' }]} />
+          
+          <View style={styles.unitCostInner}>
+            <View style={styles.unitCostContent}>
+              <View style={styles.unitCostHeader}>
+                <Ionicons name="analytics-outline" size={20} color={isDark ? '#38BDF8' : '#2563eb'} style={{ marginRight: 8 }} />
+                <Text style={[styles.unitCostLabel, { color: isDark ? '#93c5fd' : '#3b82f6' }]}>
+                  {t('unitCostLabel' as any) || 'Card Unit Cost'}
+                </Text>
+              </View>
+              <View style={styles.unitCostRow}>
+                <Text style={[styles.unitCostValue, { color: isDark ? '#FFFFFF' : '#1e3a8a' }]}>
+                  {(costQuery.data ?? 0).toFixed(3)}
+                </Text>
+                <Text style={[styles.unitCostCurrency, { color: isDark ? '#38BDF8' : '#2563eb' }]}>TND</Text>
+              </View>
+            </View>
+            
+            <View style={[styles.unitCostIconWrap, { backgroundColor: isDark ? 'transparent' : '#2563eb20' }]}>
+              {isDark && (
+                <LinearGradient
+                  colors={['#38BDF8', '#0284C7']}
+                  style={StyleSheet.absoluteFill}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+                />
+              )}
+              <Ionicons name="cash" size={28} color={isDark ? '#FFFFFF' : '#2563eb'} />
+            </View>
+          </View>
+        </Animated.View>
 
-        <ChartCard title={t('dailyLossesChart')} palette={palette}>
+        <ChartCard title={t('dailyLossesChart')} palette={palette} isDark={isDark} delay={200}>
           {lossesChart ? (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              <BarChart
-                data={lossesChart}
-                width={lossesChartWidth}
-                height={220}
-                yAxisLabel=""
-                yAxisSuffix=""
-                fromZero
-                showValuesOnTopOfBars
-                withInnerLines
-                chartConfig={chartConfig}
-                style={styles.chart}
-              />
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginHorizontal: -spacing.md }}>
+              <View style={{ marginLeft: spacing.md }}>
+                <BarChart
+                  data={lossesChart}
+                  width={lossesChartWidth}
+                  height={220}
+                  yAxisLabel=""
+                  yAxisSuffix=""
+                  fromZero
+                  showValuesOnTopOfBars
+                  withInnerLines
+                  chartConfig={chartConfig}
+                  style={styles.chart}
+                />
+              </View>
             </ScrollView>
           ) : (
             <NoDataState text={t('insufficientData')} palette={palette} />
           )}
         </ChartCard>
 
-        <ChartCard title={t('productionBySensorChart')} palette={palette}>
+        <ChartCard title={t('productionBySensorChart')} palette={palette} isDark={isDark} delay={300}>
           {productionData.length > 0 ? (
             <>
               <SensorProductionChart data={productionData} palette={palette} />
@@ -251,44 +344,35 @@ export default function StatisticsScreen() {
         </ChartCard>
 
         {machineStats.length > 0 ? (
-          <View style={[styles.card, { backgroundColor: palette.background, borderColor: palette.border }]}>
-            <Text style={[styles.cardTitle, { color: palette.text }]}>{t('lossesByMachineTable')}</Text>
-
-            <View style={[styles.tableHeader, { borderBottomColor: palette.border }]}>
-              <Text style={[styles.tableHeaderText, { flex: 1.6, color: palette.textSecondary }]}>{t('machineColumn')}</Text>
-              <Text style={[styles.tableHeaderText, { flex: 1, color: palette.textSecondary, textAlign: 'center' }]}>
-                {t('incidentsColumn')}
-              </Text>
-              <Text style={[styles.tableHeaderText, { flex: 1.2, color: palette.textSecondary, textAlign: 'center' }]}>
-                {t('lostCardsColumn')}
-              </Text>
-              <Text style={[styles.tableHeaderText, { flex: 1.2, color: palette.textSecondary, textAlign: 'right' }]}>
-                {t('costTndColumn')}
-              </Text>
-            </View>
-
+          <Animated.View entering={FadeInDown.delay(400).duration(600).springify()}>
+            <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('lossesByMachineTable')}</Text>
             {machineStats.map((row: PerteParMachine, index: number) => (
-              <View
+              <Animated.View
                 key={`${row.machine}-${index}`}
-                style={[
-                  styles.tableRow,
-                  index < machineStats.length - 1 && { borderBottomColor: palette.border, borderBottomWidth: 1 },
-                ]}
+                entering={FadeInDown.delay(500 + index * 100).springify()}
+                style={[styles.machineCard, { backgroundColor: palette.background, borderColor: palette.border }]}
               >
-                <Text style={[styles.tableValue, { flex: 1.6, color: palette.text }]}>{row.machine}</Text>
-                <Text style={[styles.tableValue, { flex: 1, color: palette.text, textAlign: 'center' }]}>{row.nb_incidents}</Text>
-                <Text style={[styles.tableValue, { flex: 1.2, color: palette.text, textAlign: 'center' }]}>
-                  {row.total_cartes_perdues}
-                </Text>
-                <Text style={[styles.tableValue, { flex: 1.2, color: LOSS_COLOR, textAlign: 'right' }]}>
-                  {row.cout_total.toFixed(3)}
-                </Text>
-              </View>
+                <View style={[styles.machineIconWrap, { backgroundColor: isDark ? '#EF444420' : '#fee2e2' }]}>
+                  <Ionicons name="hardware-chip" size={22} color="#EF4444" />
+                </View>
+                <View style={styles.machineInfo}>
+                  <Text style={[styles.machineName, { color: palette.text }]}>{row.machine}</Text>
+                  <View style={styles.machineStats}>
+                    <Text style={[styles.machineStatText, { color: palette.textSecondary }]}>{row.nb_incidents} {t('incidentsColumn')}</Text>
+                    <View style={[styles.statDivider, { backgroundColor: palette.border }]} />
+                    <Text style={[styles.machineStatText, { color: palette.textSecondary }]}>{row.total_cartes_perdues} {t('lostCardsColumn')}</Text>
+                  </View>
+                </View>
+                <View style={styles.machineCostWrap}>
+                  <Text style={[styles.machineCostValue, { color: LOSS_COLOR }]}>-{row.cout_total.toFixed(3)}</Text>
+                  <Text style={[styles.machineCostCurrency, { color: LOSS_COLOR }]}>TND</Text>
+                </View>
+              </Animated.View>
             ))}
-          </View>
+          </Animated.View>
         ) : null}
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -296,35 +380,151 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  heroBanner: {
+    paddingBottom: spacing.lg,
+    borderBottomLeftRadius: 32,
+    borderBottomRightRadius: 32,
+    overflow: 'hidden',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 8,
+    marginBottom: spacing.sm,
+  },
+  heroOrb: {
+    position: 'absolute',
+    top: -50,
+    right: -50,
+    width: 200,
+    height: 200,
+    borderRadius: 100,
+    transform: [{ scale: 1.5 }],
+  },
+  heroContent: {
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.sm,
+  },
+  heroTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  heroTitle: {
+    ...typography.h2,
+    fontWeight: '900',
+    letterSpacing: -0.5,
+  },
+  heroBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  heroBadgeText: {
+    ...typography.smallBold,
+    marginLeft: 6,
+  },
   content: {
     padding: spacing.lg,
     gap: spacing.lg,
-    paddingBottom: spacing.xl,
+    paddingBottom: spacing.xl * 2,
   },
   card: {
     borderWidth: 1,
-    borderRadius: borderRadius.xl,
+    borderRadius: 24,
     padding: spacing.lg,
-    ...shadows.sm,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.1,
+    shadowRadius: 16,
+    elevation: 4,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: spacing.lg,
+  },
+  cardTitleDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 10,
   },
   cardTitle: {
     ...typography.h4,
-    marginBottom: spacing.md,
+    fontWeight: '800',
   },
-  costBadge: {
+  unitCostCard: {
+    borderRadius: 24,
+    overflow: 'hidden',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    elevation: 10,
     borderWidth: 1,
-    borderRadius: borderRadius.lg,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    alignSelf: 'flex-start',
-    ...shadows.xs,
   },
-  costBadgeText: {
-    ...typography.bodyBold,
+  glowOrb: {
+    position: 'absolute',
+    top: -50,
+    right: -20,
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    opacity: 0.15,
+    transform: [{ scale: 1.5 }],
+  },
+  unitCostInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing.xl,
+    justifyContent: 'space-between',
+  },
+  unitCostHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  unitCostLabel: {
+    ...typography.smallBold,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  unitCostRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+  },
+  unitCostValue: {
+    ...typography.h1,
+    fontWeight: '900',
+    fontSize: 42,
+    letterSpacing: -1,
+  },
+  unitCostCurrency: {
+    ...typography.h3,
+    fontWeight: '700',
+    marginLeft: 8,
+  },
+  unitCostIconWrap: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  unitCostContent: {
+    flex: 1,
   },
   chart: {
     borderRadius: 16,
-    marginLeft: -12,
+    marginLeft: -16,
   },
   noDataState: {
     height: 160,
@@ -333,43 +533,87 @@ const styles = StyleSheet.create({
   },
   noDataText: {
     ...typography.body,
+    fontWeight: '600',
   },
   legendRow: {
     flexDirection: 'row',
     gap: spacing.md,
-    marginTop: spacing.md,
+    marginTop: spacing.lg,
     flexWrap: 'wrap',
+    paddingHorizontal: spacing.sm,
   },
   legendItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
   },
   legendDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
   },
   legendText: {
-    ...typography.small,
+    ...typography.smallBold,
   },
-  tableHeader: {
-    flexDirection: 'row',
-    paddingBottom: spacing.sm,
-    borderBottomWidth: 1,
+  sectionTitle: {
+    ...typography.h3,
+    fontWeight: '900',
+    marginBottom: spacing.md,
+    marginLeft: spacing.xs,
   },
-  tableHeaderText: {
-    ...typography.tiny,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-  },
-  tableRow: {
+  machineCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: spacing.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderRadius: 20,
+    marginBottom: spacing.sm,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
   },
-  tableValue: {
-    ...typography.small,
+  machineIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: spacing.md,
+  },
+  machineInfo: {
+    flex: 1,
+  },
+  machineName: {
+    ...typography.bodyBold,
+    fontSize: 16,
+    marginBottom: 4,
+  },
+  machineStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  machineStatText: {
+    ...typography.tiny,
     fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  statDivider: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    marginHorizontal: 8,
+  },
+  machineCostWrap: {
+    alignItems: 'flex-end',
+  },
+  machineCostValue: {
+    ...typography.h4,
+    fontWeight: '900',
+  },
+  machineCostCurrency: {
+    ...typography.tiny,
+    fontWeight: '700',
   },
 });

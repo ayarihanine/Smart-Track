@@ -11,6 +11,8 @@ const OFFLINE_KEYS = {
   CARDS: 'smarttrack_offline_cards',
   SETTINGS: 'smarttrack_settings',
   PENDING_SCANS: 'smarttrack_pending_scans',
+  PRODUCTS: 'smarttrack_offline_products',
+  LOADING_PLANS: 'smarttrack_offline_loading_plans',
 };
 
 // ============================================================================
@@ -25,6 +27,7 @@ export async function getSettings(): Promise<AppSettings> {
   return {
     webhookUrl: '',
     n8nUrl: '',
+    n8nToken: '',
     supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL || '',
     supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '',
     notificationsEnabled: true,
@@ -69,7 +72,17 @@ export async function getCards(filters?: FilterOptions): Promise<ElectronicCard[
       query = query.eq('current_machine_status', filters.currentMachineStatus);
     }
 
-    const { data, error } = await query.limit(50);
+    if (filters?.stages && filters.stages.length > 0) {
+      query = query.in('current_machine', filters.stages);
+    }
+
+    if (filters?.sortBy === 'recent') {
+      query = query.order('updated_at', { ascending: false });
+    } else if (filters?.sortBy === 'id_asc') {
+      query = query.order('card_id', { ascending: true });
+    }
+
+    const { data, error } = await query.limit(100);
     if (error) throw error;
 
     let cards = (data || []).map(mapDbCard);
@@ -136,6 +149,69 @@ export async function getCard(cardId: string): Promise<ElectronicCard | null> {
   }
 }
 
+export async function deleteCard(cardIdOrUuid: string): Promise<boolean> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return false;
+
+  try {
+    let cardUuid = cardIdOrUuid;
+    let displayCardId = cardIdOrUuid;
+    
+    // Resolve if it's a display ID
+    if (!cardIdOrUuid.includes('-') || cardIdOrUuid.length < 32) {
+      const { data: cards, error: cardError } = await supabase
+        .from('electronic_cards')
+        .select('id, card_id')
+        .eq('card_id', cardIdOrUuid)
+        .limit(1);
+
+      if (!cardError && cards && cards.length > 0) {
+        cardUuid = (cards[0] as any).id;
+        displayCardId = (cards[0] as any).card_id;
+      } else {
+        // Fallback: try querying by id just in case
+        const { data: cardsById } = await supabase
+          .from('electronic_cards')
+          .select('id, card_id')
+          .eq('id', cardIdOrUuid)
+          .limit(1);
+        if (cardsById && cardsById.length > 0) {
+          cardUuid = (cardsById[0] as any).id;
+          displayCardId = (cardsById[0] as any).card_id;
+        } else {
+          return false;
+        }
+      }
+    }
+
+    // Delete child records to avoid foreign key constraints
+    await supabase.from('component_insertions').delete().eq('card_id', cardUuid);
+    await supabase.from('scan_events').delete().eq('card_id', cardUuid);
+
+    const { error } = await supabase
+      .from('electronic_cards')
+      .delete()
+      .eq('id', cardUuid);
+
+    if (error) throw error;
+
+    // Trigger webhook for deletion
+    const settings = await getSettings();
+    if (settings.webhookUrl || settings.n8nUrl) {
+      fireWebhook(settings.webhookUrl || settings.n8nUrl, {
+        event: 'card_deleted',
+        cardId: displayCardId,
+        timestamp: new Date().toISOString(),
+      }).catch(() => { });
+    }
+
+    return true;
+  } catch (error) {
+    console.error('deleteCard failed', error);
+    return false;
+  }
+}
+
 export async function createCard(cardId: string, productId: string): Promise<ElectronicCard> {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase not configured');
@@ -152,9 +228,7 @@ export async function createCard(cardId: string, productId: string): Promise<Ele
       product_id: productId,
       status: 'in_progress',
       current_machine: currentMachine,
-      current_machine_status: 'in_progress',
-      quality_issues: '',
-      missing_items: '',
+      current_machine_status: 'in_progress'
     })
     .select();
 
@@ -213,12 +287,16 @@ export async function reassignCard(cardId: string, newMachine: string, newLocati
 
     if (error) throw error;
 
+    const session = (await supabase.auth.getSession())?.data.session;
+    const user = session?.user;
+
     // Log this as a scan event with notes
     await (supabase.from('scan_events') as any).insert({
       card_id: cardId, // might need resolution
-      scanned_by: 'Supervisor',
+      scanned_by: user?.user_metadata?.displayName || user?.email || 'Supervisor',
       location: newLocation,
       stage_name: newMachine,
+      operator_id: user?.id,
       notes: `[Reassigned] ${notes}`,
     });
 
@@ -249,9 +327,10 @@ export async function alertTestingTeam(cardId: string, currentStage?: string): P
 
     const { error } = await (supabase.from('scan_events') as any).insert({
       card_id: cardUuid,
-      scanned_by: 'Supervisor Alert',
+      scanned_by: user?.user_metadata?.displayName || user?.email || 'Supervisor Alert',
       location: 'System',
       stage_name: currentStage || 'Testing Request',
+      operator_id: user?.id,
       notes: `[ALERT] Supervisor (${user?.user_metadata?.displayName || user?.email || 'Unknown'}) requested testing intervention.`,
     });
 
@@ -301,11 +380,44 @@ export async function recordScan(data: {
       .from('electronic_cards')
       .select('id, product_id')
       .eq('card_id', data.cardId)
-      .single();
+      .maybeSingle();
     
-    if (cardError || !cardData) throw cardError || new Error('Card not found');
-    const cardUuid = (cardData as any).id;
-    const productId = (cardData as any).product_id;
+    let cardUuid = null;
+    let productId = null;
+
+    if (cardError) throw cardError;
+    
+    if (!cardData) {
+      // Auto-create the card if it doesn't exist
+      // First, find a default product to satisfy any foreign key constraints
+      const { data: defaultProducts } = await supabase.from('products').select('id').limit(1);
+      const defaultProductId = defaultProducts && defaultProducts.length > 0 ? (defaultProducts[0] as any).id : null;
+
+      const { data: newCardData, error: createError } = await (supabase.from('electronic_cards') as any)
+        .insert({
+          card_id: data.cardId,
+          product_id: defaultProductId,
+          status: 'in_progress',
+          current_machine: data.location || data.stage || 'Unknown',
+          current_machine_status: 'in_progress',
+          operator_id: user?.id
+        })
+        .select('id, product_id')
+        .single();
+        
+      if (createError) {
+        // If it fails to create (e.g. strict DB constraints), fallback to error
+        const error = new Error('Card not found and auto-create failed: ' + createError.message);
+        (error as any).code = 'CARD_NOT_FOUND';
+        throw error;
+      }
+      
+      cardUuid = newCardData.id;
+      productId = newCardData.product_id;
+    } else {
+      cardUuid = (cardData as any).id;
+      productId = (cardData as any).product_id;
+    }
 
     // 2. Handle component insertions and find loading_plan_id
     let loadingPlanId = null;
@@ -348,6 +460,14 @@ export async function recordScan(data: {
 
     if (error) throw error;
 
+    // 4. Update the card's current machine in the database so it moves along the pipeline
+    await (supabase.from('electronic_cards') as any)
+      .update({
+        current_machine: data.stage,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', cardUuid);
+
     const record = recordArray && recordArray.length > 0 ? recordArray[0] : {
         id: `optimistic-${Date.now()}`,
         card_id: cardUuid,
@@ -381,7 +501,6 @@ export async function recordScan(data: {
 
     return mapDbScan(record);
   } catch (error) {
-    console.error('recordScan failed', error);
     throw error;
   }
 }
@@ -532,11 +651,10 @@ export async function getLeaderboard(period: 'today' | 'this_week' | 'all_time')
       }
     });
 
-    // Always fetch all operator profiles to show "actual uses" in the database
+    // Always fetch all profiles to show "actual uses" in the database, regardless of role
     const { data: allProfiles, error: profileError } = await (supabase
       .from('profiles') as any)
-      .select('id, display_name, avatar_url')
-      .eq('role', 'operator');
+      .select('id, display_name, avatar_url, role');
 
     if (profileError) throw profileError;
 
@@ -633,13 +751,21 @@ export async function getAnalytics(period: 'today' | 'this_week' | 'all_time'): 
 
 export async function fireWebhook(url: string, payload: object): Promise<boolean> {
   try {
+    const settings = await getSettings();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    
+    if (settings.n8nToken) {
+      headers['Authorization'] = `Bearer ${settings.n8nToken}`;
+    }
+
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload),
     });
     return res.ok;
-  } catch {
+  } catch (error) {
+    console.warn('Webhook failed:', error);
     return false;
   }
 }
@@ -672,6 +798,8 @@ function mapDbCard(r: any): ElectronicCard {
     updatedAt: r.updated_at || r.updatedAt || new Date().toISOString(),
     qualityIssues: r.quality_issues || r.qualityIssues || '',
     missingItems: r.missing_items || r.missingItems || '',
+    currentStage: r.current_stage || r.currentStage || r.current_machine || '',
+    currentLocation: r.current_location || r.currentLocation || '',
   };
 }
 
@@ -727,18 +855,48 @@ function mapDbComponentInsertion(r: any): ComponentInsertion {
 
 export async function getProducts(): Promise<Product[]> {
   const supabase = getSupabaseClient();
-  if (!supabase) return [];
+  if (!supabase) {
+    try {
+      const raw = await AsyncStorage.getItem(OFFLINE_KEYS.PRODUCTS);
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return [];
+  }
   const { data, error } = await supabase.from('products').select('*');
-  if (error) { console.error('getProducts failed', error); return []; }
-  return (data || []).map(mapDbProduct);
+  if (error) {
+    console.error('getProducts failed', error);
+    try {
+      const raw = await AsyncStorage.getItem(OFFLINE_KEYS.PRODUCTS);
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return [];
+  }
+  const products = (data || []).map(mapDbProduct);
+  await AsyncStorage.setItem(OFFLINE_KEYS.PRODUCTS, JSON.stringify(products));
+  return products;
 }
 
 export async function getLoadingPlanForProduct(productId: string): Promise<LoadingPlanEntry[]> {
   const supabase = getSupabaseClient();
-  if (!supabase) return [];
+  if (!supabase) {
+    try {
+      const raw = await AsyncStorage.getItem(`${OFFLINE_KEYS.LOADING_PLANS}_${productId}`);
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return [];
+  }
   const { data, error } = await supabase.from('loading_plans').select('*').eq('product_id', productId).order('insertion_order', { ascending: true });
-  if (error) { console.error('getLoadingPlanForProduct failed', error); return []; }
-  return (data || []).map(mapDbLoadingPlanEntry);
+  if (error) {
+    console.error('getLoadingPlanForProduct failed', error);
+    try {
+      const raw = await AsyncStorage.getItem(`${OFFLINE_KEYS.LOADING_PLANS}_${productId}`);
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return [];
+  }
+  const plans = (data || []).map(mapDbLoadingPlanEntry);
+  await AsyncStorage.setItem(`${OFFLINE_KEYS.LOADING_PLANS}_${productId}`, JSON.stringify(plans));
+  return plans;
 }
 
 export async function getComponentInsertionsForCard(cardId: string): Promise<ComponentInsertion[]> {

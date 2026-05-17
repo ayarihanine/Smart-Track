@@ -36,6 +36,7 @@ export const useOfflineStore = create<OfflineStore>()(
 
                 set({ isSyncing: true });
                 const remaining = [...pendingScans];
+                let successCount = 0;
                 
                 for (const scan of pendingScans) {
                     try {
@@ -47,14 +48,39 @@ export const useOfflineStore = create<OfflineStore>()(
                         // Remove from the list if successful
                         const idx = remaining.indexOf(scan);
                         if (idx > -1) remaining.splice(idx, 1);
+                        successCount++;
                         set({ pendingScans: [...remaining] });
-                    } catch (err) {
+                    } catch (err: any) {
                         console.error('Failed to sync scan:', err);
-                        // Stop syncing if we hit a network error again
+                        
+                        // If it's a definitive failure (like card not found), discard it so it doesn't block the queue
+                        if (err.code === 'CARD_NOT_FOUND' || err.code === 'PGRST116' || err.message?.includes('Card not found')) {
+                            const idx = remaining.indexOf(scan);
+                            if (idx > -1) remaining.splice(idx, 1);
+                            set({ pendingScans: [...remaining] });
+                            continue;
+                        }
+                        
+                        // Otherwise, assume it's a network error and stop syncing for now
                         break;
                     }
                 }
                 set({ isSyncing: false });
+
+                if (successCount > 0) {
+                    try {
+                        const Notifications = require('expo-notifications');
+                        await Notifications.scheduleNotificationAsync({
+                            content: {
+                                title: 'Sync Complete',
+                                body: `Successfully synced ${successCount} pending scans.`,
+                            },
+                            trigger: null,
+                        });
+                    } catch (e) {
+                        console.warn('Failed to schedule notification', e);
+                    }
+                }
             },
             clearQueue: () => set({ pendingScans: [] }),
         }),

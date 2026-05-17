@@ -119,6 +119,7 @@ export interface AnalyticsData {
 export interface AppSettings {
   webhookUrl: string;
   n8nUrl: string;
+  n8nToken: string;
   supabaseUrl: string;
   supabaseAnonKey: string;
   notificationsEnabled: boolean;

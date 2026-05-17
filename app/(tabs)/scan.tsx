@@ -60,35 +60,38 @@ export default function ScanScreen() {
     try {
       // 1. Try to find in real database
       const card = await getCard(id);
-      const stage = card?.currentStage || 'Stage 1: Assembly';
-
-      // 2. Record the scan
-      try {
-        await recordScan({
-          cardId: id,
-          location: source,
-          stage: stage,
-        });
-      } catch {
-        // Offline fallback - ONLY if enabled in settings
-        if (offlineModeEnabled) {
-          addPendingScan({
-            cardId: id,
-            location: source,
-            stage: stage,
-          });
-          if (!isBatchMode) {
-            Alert.alert(t('offlineMode'), t('connectionFailedQueue'));
-          }
-        } else {
-          Alert.alert(t('scanFailed'), t('connectionErrorNoQueue'));
-        }
-      }
+      const stage = card?.currentMachine || 'Stage 1: Assembly';
 
       if (isBatchMode) {
         setBatchQueue(prev => [...prev, { cardId: id, stage, productName: card?.productName }]);
         setCardInput('');
       } else {
+        // 2. Record the scan immediately if not in batch mode
+        try {
+          await recordScan({
+            cardId: id,
+            location: source,
+            stage: stage,
+          });
+        } catch (err: any) {
+          if (err?.code === 'CARD_NOT_FOUND' || err?.message?.includes('Card not found')) {
+            Alert.alert(t('scanFailed'), `${t('unableToVerify')}: ${id}\n\nSystem details: ${err?.message}`);
+            setScanning(false);
+            return;
+          }
+
+          // Offline fallback - ONLY if enabled in settings
+          if (offlineModeEnabled) {
+            addPendingScan({
+              cardId: id,
+              location: source,
+              stage: stage,
+            });
+          } else {
+            Alert.alert(t('scanFailed'), t('connectionErrorNoQueue'));
+          }
+        }
+
         setScannedCard({ cardId: id, stage, productName: card?.productName });
         setScanned(true);
 
@@ -128,9 +131,36 @@ export default function ScanScreen() {
     slideAnim.setValue(0);
   }
 
-  function handleCommitBatch() {
+  async function handleCommitBatch() {
+    if (batchQueue.length === 0) return;
+    
+    setScanning(true);
+    const items = [...batchQueue];
+    
+    let successCount = 0;
+    for (const item of items) {
+      try {
+        await recordScan({
+          cardId: item.cardId,
+          location: 'Batch Mode',
+          stage: item.stage,
+        });
+        successCount++;
+      } catch (err: any) {
+         if (offlineModeEnabled && err?.code !== 'CARD_NOT_FOUND') {
+            addPendingScan({
+              cardId: item.cardId,
+              location: 'Batch Mode',
+              stage: item.stage,
+            });
+            successCount++; // counts as queued offline
+         }
+      }
+    }
+    
+    setScanning(false);
     setBatchQueue([]);
-    Alert.alert(t('batchComplete'), t('batchMessage'));
+    Alert.alert(t('batchComplete'), `${t('batchMessage')} (${successCount}/${items.length})`);
   }
 
   if (scanned && scannedCard) {
@@ -236,6 +266,23 @@ export default function ScanScreen() {
                   <CameraView
                     style={StyleSheet.absoluteFill}
                     facing="back"
+                    barcodeScannerSettings={{
+                      barcodeTypes: [
+                        "qr",
+                        "pdf417",
+                        "aztec",
+                        "datamatrix",
+                        "ean13",
+                        "ean8",
+                        "upc_e",
+                        "upc_a",
+                        "code128",
+                        "code39",
+                        "code93",
+                        "itf14",
+                        "codabar",
+                      ],
+                    }}
                     onBarcodeScanned={({ data }) => {
                       if (!scanning && !scanned) {
                         processTrack(data, 'Optical Scanner');

@@ -13,6 +13,17 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
+import Animated, { 
+  useAnimatedProps, 
+  useSharedValue, 
+  withTiming, 
+  useAnimatedStyle,
+  interpolateColor,
+  withSpring,
+  withRepeat
+} from 'react-native-reanimated';
+import Svg, { Circle, Defs, LinearGradient as SvgGradient, Stop } from 'react-native-svg';
+import { BlurView } from 'expo-blur';
 
 import { borderRadius, shadows, spacing, typography } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
@@ -73,6 +84,8 @@ function formatTrend(delta: number) {
   return { color: ERROR_COLOR, icon: 'arrow-down', text: `${delta}` };
 }
 
+const AnimatedCircle = Animated.createAnimatedComponent(Circle);
+
 function PerformanceCard({
   title,
   value,
@@ -85,27 +98,123 @@ function PerformanceCard({
   palette: any;
 }) {
   const { isDark } = useTheme();
+  const progress = useSharedValue(0);
   const valueColor = getPerformanceColor(value);
+  
+  const size = 80;
+  const strokeWidth = 8;
+  const center = size / 2;
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+
+  useEffect(() => {
+    progress.value = withSpring(value / 100, { damping: 15 });
+  }, [value]);
+
+  const animatedProps = useAnimatedProps(() => {
+    const strokeDashoffset = circumference * (1 - progress.value);
+    return {
+      strokeDashoffset,
+    };
+  });
 
   return (
     <View style={[styles.performanceCard, { backgroundColor: palette.background, borderColor: palette.border }]}>
       <LinearGradient
-        colors={isDark ? ['#1e293b', '#0f172a'] : ['#F8FAFC', '#F1F5F9']}
+        colors={isDark ? ['#1e293b', '#0f172a'] : ['#FFFFFF', '#F8FAFC']}
         style={StyleSheet.absoluteFill}
       />
-      <View style={styles.performanceIconHeader}>
-         <View style={[styles.performanceMiniIcon, { backgroundColor: valueColor + '20' }]}>
-            <Ionicons name="stats-chart" size={14} color={valueColor} />
-         </View>
-         <Text style={[styles.performanceLabel, { color: palette.textSecondary }]}>{title}</Text>
+      
+      <View style={styles.cardHeaderRow}>
+        <View style={[styles.performanceMiniIcon, { backgroundColor: valueColor + '20' }]}>
+          <Ionicons name={title.includes('TRG') ? 'rocket' : 'flash'} size={14} color={valueColor} />
+        </View>
+        <Text style={[styles.performanceLabel, { color: palette.textSecondary }]}>{title}</Text>
       </View>
-      <Text style={[styles.performanceValue, { color: palette.text }]}>{value.toFixed(1)}%</Text>
-      <View style={[styles.performanceProgressBar, { backgroundColor: palette.border }]}>
-        <View style={[styles.performanceProgressFill, { width: `${value}%`, backgroundColor: valueColor }]} />
+
+      <View style={styles.performanceContent}>
+        <View style={styles.circularContainer}>
+          <Svg width={size} height={size}>
+            <Defs>
+              <SvgGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <Stop offset="0%" stopColor={valueColor} />
+                <Stop offset="100%" stopColor={isDark ? valueColor : valueColor + 'CC'} />
+              </SvgGradient>
+            </Defs>
+            {/* Background Circle */}
+            <Circle
+              cx={center}
+              cy={center}
+              r={radius}
+              stroke={isDark ? '#334155' : '#E2E8F0'}
+              strokeWidth={strokeWidth}
+              fill="none"
+            />
+            {/* Progress Circle */}
+            <AnimatedCircle
+              cx={center}
+              cy={center}
+              r={radius}
+              stroke="url(#grad)"
+              strokeWidth={strokeWidth}
+              strokeDasharray={circumference}
+              animatedProps={animatedProps}
+              strokeLinecap="round"
+              fill="none"
+              transform={`rotate(-90 ${center} ${center})`}
+            />
+          </Svg>
+          <View style={styles.percentageContainer}>
+            <Text style={[styles.performanceValue, { color: palette.text, fontSize: 18, marginBottom: 0 }]}>
+              {Math.round(value)}
+              <Text style={{ fontSize: 10, color: palette.textSecondary }}>%</Text>
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.statsInfoWrap}>
+          <Text style={[styles.performanceSubtitle, { color: palette.textTertiary, fontSize: 11 }]}>
+            {subtitle}
+          </Text>
+          <View style={[styles.trendBadge, { backgroundColor: valueColor + '15' }]}>
+            <Ionicons 
+              name={value >= 85 ? 'trending-up' : value >= 65 ? 'remove' : 'trending-down'} 
+              size={12} 
+              color={valueColor} 
+            />
+            <Text style={[styles.trendText, { color: valueColor }]}>
+              {value >= 85 ? 'Good' : value >= 65 ? 'Stable' : 'Low'}
+            </Text>
+          </View>
+        </View>
       </View>
-      <Text style={[styles.performanceSubtitle, { color: palette.textTertiary }]} numberOfLines={2}>
-        {subtitle}
-      </Text>
+    </View>
+  );
+}
+
+function PulsingDot({ color }: { color: string }) {
+  const scale = useSharedValue(1);
+  const opacity = useSharedValue(0.4);
+
+  useEffect(() => {
+    scale.value = withRepeat(withTiming(2, { duration: 2000 }), -1, false);
+    opacity.value = withRepeat(withTiming(0, { duration: 2000 }), -1, false);
+  }, []);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+    opacity: opacity.value,
+    backgroundColor: color,
+    position: 'absolute',
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  }));
+
+  return (
+    <View style={{ width: 20, height: 20, alignItems: 'center', justifyContent: 'center', marginRight: 8 }}>
+      <Animated.View style={animatedStyle} />
+      <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color }} />
     </View>
   );
 }
@@ -126,7 +235,7 @@ function SensorRow({
   return (
     <View style={[styles.sensorRow, { borderBottomColor: palette.border }]}>
       <View style={styles.sensorLeft}>
-        <View style={[styles.sensorDot, { backgroundColor: palette.primary }]} />
+        <PulsingDot color={palette.primary} />
         <Text style={[styles.sensorLabel, { color: palette.text }]}>{label}</Text>
       </View>
       <View style={styles.sensorRight}>
@@ -277,23 +386,34 @@ export default function DashboardScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={palette.primary} />}
         showsVerticalScrollIndicator={false}
       >
-        <View style={[styles.header, { borderColor: palette.border, overflow: 'hidden' }]}>
-          <LinearGradient
-            colors={isDark ? ['#1e293b', '#0f172a'] : ['#ffffff', '#f8fafc']}
-            style={StyleSheet.absoluteFill}
-          />
-          <Text style={[styles.headerTitle, { color: palette.text }]}>{t('smartTrackCmsLine')}</Text>
+        <View style={styles.headerWrap}>
+          <BlurView intensity={isDark ? 30 : 60} tint={isDark ? "dark" : "light"} style={styles.headerBlur}>
+            <LinearGradient
+              colors={isDark ? ['rgba(30,41,59,0.8)', 'rgba(15,23,42,0.9)'] : ['rgba(255,255,255,0.8)', 'rgba(248,250,252,0.9)']}
+              style={StyleSheet.absoluteFill}
+            />
+            <View style={styles.headerInner}>
+              <View>
+                <Text style={[styles.headerSubtitle, { color: palette.textSecondary }]}>{t('factoryPerformance') || 'Factory Overview'}</Text>
+                <Text style={[styles.headerTitle, { color: palette.text }]}>{t('smartTrackCmsLine')}</Text>
+              </View>
 
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() => router.push('/system-status')}
-            style={[styles.piBadge, { backgroundColor: (piOnline ? SUCCESS_COLOR : ERROR_COLOR) + '12' }]}
-          >
-            <View style={[styles.piBadgeDot, { backgroundColor: piOnline ? SUCCESS_COLOR : ERROR_COLOR }]} />
-            <Text style={[styles.piBadgeText, { color: piOnline ? SUCCESS_COLOR : ERROR_COLOR }]}>
-              {piOnline ? t('piOnline') : t('piOffline')}
-            </Text>
-          </TouchableOpacity>
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => router.push('/system-status')}
+                style={[styles.piBadge, { 
+                  backgroundColor: (piOnline ? SUCCESS_COLOR : ERROR_COLOR) + '15',
+                  borderColor: (piOnline ? SUCCESS_COLOR : ERROR_COLOR) + '40',
+                  borderWidth: 1
+                }]}
+              >
+                <PulsingDot color={piOnline ? SUCCESS_COLOR : ERROR_COLOR} />
+                <Text style={[styles.piBadgeText, { color: piOnline ? SUCCESS_COLOR : ERROR_COLOR }]}>
+                  {piOnline ? t('piOnline') : t('piOffline')}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </BlurView>
         </View>
 
         <View style={styles.performanceGrid}>
@@ -334,12 +454,25 @@ export default function DashboardScreen() {
           )}
         </View>
 
-        <View style={[styles.sectionCard, { backgroundColor: palette.background, borderColor: palette.border }]}>
+        <View style={[styles.sectionCard, { backgroundColor: palette.background, borderColor: palette.border, overflow: 'hidden' }]}>
+          {todayLosses.totalCards > 0 ? (
+             <LinearGradient
+               colors={isDark ? ['#450a0a', '#171717'] : ['#fef2f2', '#ffffff']}
+               style={StyleSheet.absoluteFill}
+             />
+          ) : (
+             <LinearGradient
+               colors={isDark ? ['#022c22', '#171717'] : ['#f0fdf4', '#ffffff']}
+               style={StyleSheet.absoluteFill}
+             />
+          )}
           <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('todayLosses')}</Text>
 
           {todayLosses.totalCards === 0 ? (
             <View style={styles.lossesOkState}>
-              <Ionicons name="checkmark-circle" size={28} color={SUCCESS_COLOR} />
+              <View style={[styles.lossIconCircle, { backgroundColor: SUCCESS_COLOR + '20' }]}>
+                <Ionicons name="shield-checkmark" size={28} color={SUCCESS_COLOR} />
+              </View>
               <View style={styles.lossesTextWrap}>
                 <Text style={[styles.lossesTitle, { color: palette.text }]}>{t('noLossesDetected')}</Text>
                 <Text style={[styles.lossesSubtitle, { color: palette.textSecondary }]}>{t('lossesSubtitle')}</Text>
@@ -347,12 +480,14 @@ export default function DashboardScreen() {
             </View>
           ) : (
             <View style={styles.lossesAlertState}>
-              <Ionicons name="warning" size={28} color={ERROR_COLOR} />
+              <View style={[styles.lossIconCircle, { backgroundColor: ERROR_COLOR + '20', borderWidth: 1, borderColor: ERROR_COLOR + '40' }]}>
+                <Ionicons name="warning" size={28} color={ERROR_COLOR} />
+              </View>
               <View style={styles.lossesTextWrap}>
                 <Text style={[styles.lossesTitle, { color: palette.text }]}>
                   {t('lostCardsValue').replace('{{count}}', String(todayLosses.totalCards))}
                 </Text>
-                <Text style={[styles.lossesSubtitle, { color: ERROR_COLOR }]}>
+                <Text style={[styles.lossesSubtitle, { color: ERROR_COLOR, fontWeight: '800', fontSize: 16 }]}>
                   {t('lossCostValue').replace('{{cost}}', todayLosses.totalCost.toFixed(3))}
                 </Text>
               </View>
@@ -393,18 +528,30 @@ const styles = StyleSheet.create({
     gap: spacing.lg,
     paddingBottom: spacing.xl,
   },
-  header: {
-    borderWidth: 1,
+  headerWrap: {
     borderRadius: borderRadius.xl,
+    overflow: 'hidden',
+    ...shadows.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(150, 150, 150, 0.2)',
+  },
+  headerBlur: {
     padding: spacing.lg,
+  },
+  headerInner: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    ...shadows.sm,
+  },
+  headerSubtitle: {
+    ...typography.tiny,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    marginBottom: 4,
+    letterSpacing: 0.5,
   },
   headerTitle: {
     ...typography.h3,
-    flex: 1,
     marginRight: spacing.md,
   },
   piBadge: {
@@ -432,12 +579,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: borderRadius.xl,
     padding: spacing.lg,
-    ...shadows.sm,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    elevation: 3,
+    overflow: 'hidden',
   },
   performanceLabel: {
-    ...typography.tiny,
-    fontWeight: '700',
+    ...typography.smallBold,
     textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   performanceValue: {
     ...typography.h2,
@@ -464,6 +616,45 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 12,
   },
+  cardHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 16,
+  },
+  performanceContent: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 12,
+  },
+  circularContainer: {
+    width: 80,
+    height: 80,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  percentageContainer: {
+    position: 'absolute',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statsInfoWrap: {
+    alignItems: 'center',
+    gap: 4,
+  },
+  trendBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12,
+  },
+  trendText: {
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
   performanceMiniIcon: {
     width: 24,
     height: 24,
@@ -474,12 +665,16 @@ const styles = StyleSheet.create({
   sectionCard: {
     borderWidth: 1,
     borderRadius: borderRadius.xl,
-    padding: spacing.lg,
-    ...shadows.sm,
+    padding: spacing.xl,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    elevation: 3,
   },
   sectionTitle: {
     ...typography.h4,
-    marginBottom: spacing.md,
+    marginBottom: spacing.lg,
   },
   emptyBlock: {
     alignItems: 'center',
@@ -538,6 +733,13 @@ const styles = StyleSheet.create({
   sensorDivider: {
     height: 1,
   },
+  lossIconCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   lossesOkState: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -565,7 +767,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: spacing.sm,
     overflow: 'hidden',
-    ...shadows.md,
+    shadowColor: '#3B82F6',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 8,
+    marginTop: spacing.sm,
   },
   fullStatsText: {
     ...typography.bodyBold,

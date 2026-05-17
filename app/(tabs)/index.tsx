@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
-  RefreshControl, Animated, Image, Modal,
+  RefreshControl, Animated, Image, Modal, Alert, Pressable,
 } from 'react-native';
 import AnimatedReanimated, {
   useSharedValue,
@@ -20,7 +20,7 @@ import { colors, spacing, typography, borderRadius, shadows } from '@/constants/
 import { useAuthStore } from '@/store/authStore';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
-import { getCards, getAnalytics } from '@/lib/api';
+import { getCards, getAnalytics, deleteCard } from '@/lib/api';
 import { getSupabaseClient } from '@/lib/supabase';
 import { ElectronicCard, UserRole } from '@/types';
 import { SearchModal } from '@/components/SearchModal';
@@ -36,8 +36,9 @@ const ROLE_COLORS: Record<UserRole, string> = {
 };
 
 
-function CardListItem({ card, onPress, onMorePress, palette, primaryColor }: { card: ElectronicCard; onPress: () => void; onMorePress?: () => void; palette: any; primaryColor?: string }) {
+function CardListItem({ card, onPress, onDelete, palette, primaryColor }: { card: ElectronicCard; onPress: () => void; onDelete?: () => void; palette: any; primaryColor?: string }) {
   const { t } = useTranslation();
+  const { isDark } = useTheme();
   const stageColors: Record<string, string> = {
     'Assembly': palette.primary,
     'Testing': '#F59E0B',
@@ -55,7 +56,7 @@ function CardListItem({ card, onPress, onMorePress, palette, primaryColor }: { c
     const mins = Math.floor(diff / 60000);
     const hours = Math.floor(mins / 60);
     const days = Math.floor(hours / 24);
-    if (days > 0) return `${days}d ago`; // Keep these as they are mostly international or if translated, I don't have day keys yet
+    if (days > 0) return `${days}d ago`; 
     if (hours > 0) return t('hoursAgo').replace('X', hours.toString());
     return t('minsAgo').replace('X', mins.toString());
   };
@@ -64,30 +65,41 @@ function CardListItem({ card, onPress, onMorePress, palette, primaryColor }: { c
     <TouchableOpacity 
       style={[styles.cardItem, { backgroundColor: palette.background, borderColor: palette.border }]} 
       onPress={onPress} 
-      activeOpacity={0.7}
+      activeOpacity={0.8}
     >
-      <View style={styles.cardItemLeft}>
-        <View style={[styles.stageProgress, { borderColor: palette.border }]}>
-          <View style={[styles.stageProgressFill, {
-            borderTopColor: stageColor,
-            borderRightColor: card.progressPercent > 25 ? stageColor : 'transparent',
-            borderBottomColor: card.progressPercent > 50 ? stageColor : 'transparent',
-            borderLeftColor: card.progressPercent > 75 ? stageColor : 'transparent',
-          }]} />
-          <Ionicons name="hardware-chip-outline" size={16} color={stageColor} />
+      <LinearGradient
+        colors={isDark ? ['#1e293b', '#0f172a'] : ['#FFFFFF', '#F9FAFB']}
+        style={StyleSheet.absoluteFill}
+      />
+      <View style={styles.cardItemInner}>
+        <View style={[styles.cardIconBox, { backgroundColor: stageColor + '12' }]}>
+           <Ionicons name={card.status === 'completed' ? "shield-checkmark" : "hardware-chip-outline"} size={20} color={stageColor} />
         </View>
-        <View style={styles.cardItemInfo}>
-          <View style={styles.cardItemHeader}>
-            <Text style={[styles.cardItemId, { color: palette.text }]}>{card.cardId}</Text>
-            <View style={[styles.statusBadge, { backgroundColor: stageColor + '15', borderColor: stageColor + '30' }]}>
-              <Text style={[styles.statusBadgeText, { color: stageColor }]}>{stageName}</Text>
+        
+        <View style={styles.cardMainInfo}>
+          <View style={styles.cardIdRow}>
+            <Text style={[styles.cardIdText, { color: palette.text }]}>{card.cardId}</Text>
+            <View style={[styles.stageBadge, { backgroundColor: stageColor + '12', borderColor: stageColor + '30' }]}>
+              <Text style={[styles.stageBadgeText, { color: stageColor }]}>{stageName}</Text>
             </View>
           </View>
-          <Text style={[styles.cardItemMeta, { color: palette.textTertiary }]}>
-            <Ionicons name="location-outline" size={12} color={palette.textTertiary} /> {card.currentLocation} · {getTimeAgo(card.updatedAt)}
+          <Text style={[styles.cardTimeText, { color: palette.textTertiary }]}>
+             <Ionicons name="location-outline" size={12} color={palette.textTertiary} /> {card.currentLocation} · {getTimeAgo(card.updatedAt)}
           </Text>
         </View>
-        <Ionicons name="chevron-forward" size={18} color={palette.textDisabled} />
+
+        {onDelete && (
+          <TouchableOpacity 
+            style={styles.cardMoreBtn} 
+            onPress={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+          >
+            <Ionicons name="trash-outline" size={18} color={palette.textDisabled} />
+          </TouchableOpacity>
+        )}
+        {!onDelete && <Ionicons name="chevron-forward" size={18} color={palette.textDisabled} />}
       </View>
     </TouchableOpacity>
   );
@@ -193,9 +205,12 @@ export default function HomeScreen() {
   }, [cards, stuckThreshold, checkStuckCards]);
 
   const thresholdMs = Math.max(0.1, stuckThreshold) * 60 * 60 * 1000;
-  const delayedCards = (cards || []).filter(c =>
-    c.status !== 'completed' && (Date.now() - new Date(c.updatedAt).getTime()) > thresholdMs
-  ).sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
+  const maxThresholdMs = 7 * 24 * 60 * 60 * 1000; // 7 days maximum
+  
+  const delayedCards = (cards || []).filter(c => {
+    const timeInactive = Date.now() - new Date(c.updatedAt).getTime();
+    return c.status !== 'completed' && timeInactive > thresholdMs && timeInactive < maxThresholdMs;
+  }).sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
 
   const headerOpacity = scrollY.interpolate({ inputRange: [0, 60], outputRange: [1, 0.95], extrapolate: 'clamp' });
 
@@ -204,6 +219,28 @@ export default function HomeScreen() {
     if (h < 12) return t('morning');
     if (h < 17) return t('afternoon');
     return t('evening');
+  };
+
+  const handleDelete = async (cardId: string) => {
+    Alert.alert(
+      t('deleteCard') || 'Delete Card',
+      t('deleteCardConfirm') || 'Are you sure you want to delete this card?',
+      [
+        { text: t('cancel'), style: 'cancel' },
+        { 
+          text: t('delete'), 
+          style: 'destructive',
+          onPress: async () => {
+            const success = await deleteCard(cardId);
+            if (success) {
+              refetch();
+            } else {
+              Alert.alert(t('error'), t('deleteFailed'));
+            }
+          }
+        }
+      ]
+    );
   };
 
   return (
@@ -306,17 +343,7 @@ export default function HomeScreen() {
         >
           <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('quickActions')}</Text>
           <View style={[styles.actionsRow, { backgroundColor: palette.background }]}>
-            <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/production-map')} activeOpacity={0.8}>
-              <AnimatedIcon index={0}>
-                <LinearGradient
-                  colors={isDark ? ['#1e40af', '#1e3a8a'] : ['#DBEAFE', '#BFDBFE']}
-                  style={styles.actionIcon}
-                >
-                  <Ionicons name="map" size={24} color="#2563EB" />
-                </LinearGradient>
-              </AnimatedIcon>
-              <Text style={[styles.actionLabel, { color: palette.textSecondary }]} numberOfLines={2} adjustsFontSizeToFit>{t('productionMap')}</Text>
-            </TouchableOpacity>
+
 
             {(user?.role === 'supervisor' || user?.role === 'admin') && (
               <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/activity-feed' as any)} activeOpacity={0.8}>
@@ -361,6 +388,7 @@ export default function HomeScreen() {
               key={card.id}
               card={card}
               onPress={() => router.push(`/card/${card.cardId}`)}
+              onDelete={() => handleDelete(card.id)}
               palette={palette}
               primaryColor={palette.primary}
             />
@@ -464,22 +492,7 @@ export default function HomeScreen() {
                 <View style={styles.newBadge}><Text style={styles.newBadgeText}>NEW</Text></View>
               </TouchableOpacity>
 
-              <TouchableOpacity
-                style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
-                onPress={() => {
-                  setMainMenuVisible(false);
-                  router.push('/production-map' as any);
-                }}
-              >
-                <View style={[styles.sheetActionIcon, { backgroundColor: '#F0FDF4' }]}>
-                  <Ionicons name="map" size={20} color="#10B981" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('productionMap') || 'Production Map'}</Text>
-                  <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>{t('productionMapDesc') || 'Real-time floor visualization'}</Text>
-                </View>
-                <View style={styles.newBadge}><Text style={styles.newBadgeText}>NEW</Text></View>
-              </TouchableOpacity>
+
 
               <TouchableOpacity
                 style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
@@ -515,6 +528,22 @@ export default function HomeScreen() {
               </TouchableOpacity>
 
               {/* STANDARD TOOLS */}
+              <TouchableOpacity
+                style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
+                onPress={() => {
+                  setMainMenuVisible(false);
+                  router.push('/daily-report');
+                }}
+              >
+                <View style={[styles.sheetActionIcon, { backgroundColor: '#E0F2FE' }]}>
+                  <Ionicons name="document-text" size={20} color="#0284C7" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('dailyReport') || 'Daily Report'}</Text>
+                  <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>{t('dailyReportDesc') || 'Download Excel report'}</Text>
+                </View>
+              </TouchableOpacity>
+
               {(user?.role === 'supervisor' || user?.role === 'admin') && (
                 <TouchableOpacity
                   style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
@@ -657,27 +686,56 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center', marginRight: spacing.md,
   },
   sheetActionText: { ...typography.body, fontWeight: '600' },
+  badgeText: { ...typography.small, fontWeight: '600' },
   cardItem: {
-    borderRadius: borderRadius.lg,
-    padding: spacing.md, marginBottom: spacing.sm, ...shadows.xs,
+    borderRadius: borderRadius.xl,
+    overflow: 'hidden',
+    borderWidth: 1,
+    minHeight: 80,
+    marginBottom: spacing.sm,
+    ...shadows.sm,
+  },
+  cardItemInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing.md,
+    gap: spacing.md,
+  },
+  cardIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardMainInfo: {
+    flex: 1,
+    gap: 4,
+  },
+  cardIdRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 2,
+  },
+  cardIdText: {
+    ...typography.bodyBold,
+    fontSize: 16,
+  },
+  stageBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
     borderWidth: 1,
   },
-  cardItemLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  stageProgress: {
-    width: 44, height: 44, borderRadius: 22,
-    borderWidth: 3, alignItems: 'center', justifyContent: 'center',
+  stageBadgeText: {
+    ...typography.tiny,
+    fontWeight: '700',
+    textTransform: 'uppercase',
   },
-  stageProgressFill: {
-    position: 'absolute', width: 44, height: 44,
-    borderRadius: 22, borderWidth: 3, borderColor: 'transparent',
+  cardTimeText: {
+    ...typography.small,
   },
-  cardItemInfo: { flex: 1 },
-  cardItemId: { ...typography.bodyBold },
-  cardItemStage: { ...typography.caption, marginTop: 2 },
-  cardItemMeta: { ...typography.small, marginTop: 2 },
-  badge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: spacing.sm, paddingVertical: 4, borderRadius: borderRadius.full },
-  badgeDot: { width: 6, height: 6, borderRadius: 3 },
-  badgeText: { ...typography.small, fontWeight: '600' },
   empty: { alignItems: 'center', paddingVertical: spacing.xl, gap: spacing.sm },
   emptyText: { ...typography.body },
   emptySubtext: { ...typography.small },

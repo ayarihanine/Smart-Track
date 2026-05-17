@@ -92,10 +92,10 @@ export const useAlertsStore = create<AlertsState>((set, get) => ({
     const existingById = new Map(existingAlerts.map(alert => [alert.id, alert]));
 
     const stuckAlerts = cards
-      .filter(card => (
-        card.status !== 'completed' &&
-        now - new Date(card.updatedAt).getTime() > thresholdMs
-      ))
+      .filter(card => {
+        const timeInactive = now - new Date(card.updatedAt).getTime();
+        return card.status !== 'completed' && timeInactive > thresholdMs && timeInactive < 7 * 24 * 60 * 60 * 1000;
+      })
       .map(card => {
         const id = `stuck_card:${card.cardId}`;
         const existing = existingById.get(id);

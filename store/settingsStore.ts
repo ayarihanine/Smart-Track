@@ -17,7 +17,8 @@ interface SettingsState extends AppSettings, ExtraState {
 export const useSettingsStore = create<SettingsState>((set, get) => ({
     // Default AppSettings
     webhookUrl: '',
-    n8nUrl: '',
+    n8nUrl: 'http://localhost:5678/mcp-server/http',
+    n8nToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1Zjg5Y2RhNC1lOTA1LTQ0OTUtYWNlOC1hMWUzOWY5NDY5YTIiLCJpc3MiOiJuOG4iLCJhdWQiOiJtY3Atc2VydmVyLWFwaSIsImp0aSI6ImI4ZTE1MjA3LTkyODUtNDdkMC04NjJlLTQ1OTcyMzMzYzg2NSIsImlhdCI6MTc3ODU5NDAxMn0.8a7Igdi60i3hnQ3HWBKoq7ZvpcZTRejwbCex4XXG9rg',
     supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL || '',
     supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '',
     notificationsEnabled: true,

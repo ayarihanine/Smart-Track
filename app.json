@@ -3,6 +3,15 @@
     "name": "Card Track",
     "slug": "card-track",
     "version": "1.0.0",
-    "scheme": "cardtrack"
+    "scheme": "cardtrack",
+    "icon": "./assets/images/icon.png",
+    "extra": {
+      "eas": {
+        "projectId": "227fc50c-1dd6-482d-9785-52e9c24bd125"
+      }
+    },
+    "android": {
+      "package": "com.ayarih1.cardtrack"
+    }
   }
 }
