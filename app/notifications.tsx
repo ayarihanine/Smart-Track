@@ -11,6 +11,9 @@ import { useTheme } from '@/components/ThemeProvider';
 const SEVERITY_STYLE = {
   warning: { bg: '#FFFBEB', border: '#FDE68A', icon: 'warning', color: '#D97706', lightBg: '#FFFBEB' },
   error: { bg: '#FEF2F2', border: '#FECACA', icon: 'alert-circle', color: '#DC2626', lightBg: '#FEF2F2' },
+  medium: { bg: '#FFFBEB', border: '#FDE68A', icon: 'warning', color: '#D97706', lightBg: '#FFFBEB' },
+  high: { bg: '#FFFDF5', border: '#FED7AA', icon: 'warning', color: '#EA580C', lightBg: '#FFFDF5' },
+  critical: { bg: '#FEF2F2', border: '#FECACA', icon: 'alert-circle', color: '#DC2626', lightBg: '#FEF2F2' },
 };
 
 export default function NotificationsScreen() {

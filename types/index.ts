@@ -67,6 +67,7 @@ export interface ElectronicCard {
   componentInsertions?: ComponentInsertion[];
   qualityIssues?: string;
   missingItems?: string;
+  stageEnteredAt?: string;
 }
 
 export interface ScanEvent {
@@ -129,6 +130,7 @@ export interface AppSettings {
   theme: 'light' | 'dark' | 'auto';
   language: 'en' | 'fr' | 'ar';
   dashboardWidgets: { id: string; visible: boolean; order: number }[];
+  stuckCardThresholdHours?: number;
 }
 
 export interface FilterOptions {

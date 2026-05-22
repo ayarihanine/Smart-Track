@@ -7,6 +7,16 @@ export interface EtatCapteur {
   capteur3: number;
 }
 
+export interface SensorEvent {
+  id: string | number;
+  sensor_id: string;
+  gpio_pin: number;
+  state: string;
+  scenario: string;
+  raw_value: number;
+  created_at: string;
+}
+
 export interface PertesTable {
   id: string | number;
   date_temps: string;
@@ -46,7 +56,27 @@ export interface Configuration {
   machine_name: string;
   cycle_time_seconds: number;
   loss_threshold: number;
+  serial_port: string;
   updated_at: string;
+}
+
+export type BatchStatus = 'active' | 'completed' | 'cancelled';
+
+export interface ProductionBatch {
+  id: string;
+  batch_number: string;
+  product_id?: string;
+  card_reference: string;
+  target_quantity: number;
+  produced_quantity: number;
+  good_quantity: number;
+  waste_quantity: number;
+  start_time: string;
+  end_time?: string;
+  status: BatchStatus;
+  cost_per_card: number;
+  created_by?: string;
+  created_at: string;
 }
 
 export interface Article {

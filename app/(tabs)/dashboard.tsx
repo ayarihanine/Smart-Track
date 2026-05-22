@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -8,6 +8,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
@@ -255,11 +257,79 @@ export default function DashboardScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [sensorRows, setSensorRows] = useState<EtatCapteur[]>([]);
   const [todayLosses, setTodayLosses] = useState<TodayLossSummary>({ totalCards: 0, totalCost: 0 });
+  const [isLoadingSensorsAndLosses, setIsLoadingSensorsAndLosses] = useState(true);
 
-  const sensorsQuery = useQuery({
-    queryKey: ['production', 'dashboard', 'sensors'],
-    queryFn: () => getLatestEtatCapteur(2),
-  });
+  // Active batch info
+  const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
+  const [activeBatchNum, setActiveBatchNum] = useState<string | null>(null);
+  const [activeCardRef, setActiveCardRef] = useState<string | null>(null);
+  const [activeTargetQty, setActiveTargetQty] = useState<number>(0);
+  const [batchCards, setBatchCards] = useState<any[]>([]);
+
+  // Function to load active batch and its electronic cards
+  const fetchActiveBatchData = async () => {
+    try {
+      const storedId = await AsyncStorage.getItem('current_batch_id');
+      const storedNum = await AsyncStorage.getItem('current_batch_number');
+      const storedRef = await AsyncStorage.getItem('current_batch_card_reference');
+      const storedQty = await AsyncStorage.getItem('current_batch_target_quantity');
+
+      let batchId = storedId;
+      let batchNum = storedNum;
+      let cardRef = storedRef;
+      let targetQty = storedQty ? parseInt(storedQty, 10) : 0;
+
+      const supabase = getSupabaseClient();
+      if (!batchId && supabase) {
+        // Fallback: Query DB
+        const { data, error } = await supabase
+          .from('production_batches')
+          .select('*')
+          .eq('status', 'active')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (!error && data) {
+          batchId = data.id;
+          batchNum = data.batch_number;
+          cardRef = data.card_reference;
+          targetQty = data.target_quantity;
+          
+          await AsyncStorage.setItem('current_batch_id', data.id);
+          await AsyncStorage.setItem('current_batch_number', data.batch_number);
+          await AsyncStorage.setItem('current_batch_card_reference', data.card_reference || '');
+          await AsyncStorage.setItem('current_batch_target_quantity', String(data.target_quantity || 0));
+        }
+      }
+
+      setActiveBatchId(batchId);
+      setActiveBatchNum(batchNum);
+      setActiveCardRef(cardRef);
+      setActiveTargetQty(targetQty);
+
+      if (batchId && supabase) {
+        const { data: cards, error } = await supabase
+          .from('electronic_cards')
+          .select('*')
+          .eq('batch_id', batchId);
+        
+        if (!error && cards) {
+          setBatchCards(cards);
+        }
+      } else {
+        setBatchCards([]);
+      }
+    } catch (err) {
+      console.error('Error loading active batch data:', err);
+    }
+  };
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchActiveBatchData();
+    }, [])
+  );
 
   const trgQuery = useQuery({
     queryKey: ['production', 'dashboard', 'trg'],
@@ -271,23 +341,30 @@ export default function DashboardScreen() {
     queryFn: getLatestTRS,
   });
 
-  const lossesQuery = useQuery({
-    queryKey: ['production', 'dashboard', 'today-losses'],
-    queryFn: getTodayLossesSummary,
-  });
-
   const piQuery = useQuery({
     queryKey: ['production', 'dashboard', 'pi'],
     queryFn: getPiStatus,
   });
 
-  useEffect(() => {
-    setSensorRows(sensorsQuery.data || []);
-  }, [sensorsQuery.data]);
+  const fetchSensorsAndLosses = async () => {
+    try {
+      const [sensorsData, lossesData] = await Promise.all([
+        getLatestEtatCapteur(2),
+        getTodayLossesSummary(),
+      ]);
+      setSensorRows(sensorsData || []);
+      setTodayLosses(lossesData || { totalCards: 0, totalCost: 0 });
+    } catch (error) {
+      console.error('fetchSensorsAndLosses failed:', error);
+    } finally {
+      setIsLoadingSensorsAndLosses(false);
+    }
+  };
 
   useEffect(() => {
-    setTodayLosses(lossesQuery.data || { totalCards: 0, totalCost: 0 });
-  }, [lossesQuery.data]);
+    fetchSensorsAndLosses();
+    fetchActiveBatchData();
+  }, []);
 
   useEffect(() => {
     const supabase = getSupabaseClient();
@@ -316,21 +393,52 @@ export default function DashboardScreen() {
           }));
         }
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'electronic_cards' },
+        (payload) => {
+          const eventType = payload.eventType;
+          const newRow = payload.new as any;
+          const oldRow = payload.old as any;
+
+          if (eventType === 'INSERT') {
+            if (activeBatchId && newRow.batch_id === activeBatchId) {
+              setBatchCards((curr) => {
+                if (curr.some(c => c.id === newRow.id)) return curr;
+                return [...curr, newRow];
+              });
+            }
+          } else if (eventType === 'UPDATE') {
+            if (activeBatchId && newRow.batch_id === activeBatchId) {
+              setBatchCards((curr) => 
+                curr.map(c => c.id === newRow.id ? newRow : c)
+              );
+            } else if (activeBatchId && oldRow?.batch_id === activeBatchId) {
+              setBatchCards((curr) => curr.filter(c => c.id !== newRow.id));
+            }
+          } else if (eventType === 'DELETE') {
+            const deletedId = oldRow?.id || payload.old?.id;
+            if (deletedId) {
+              setBatchCards((curr) => curr.filter(c => c.id !== deletedId));
+            }
+          }
+        }
+      )
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [activeBatchId]);
 
 
   const onRefresh = async () => {
     setRefreshing(true);
     await Promise.all([
-      sensorsQuery.refetch(),
+      fetchSensorsAndLosses(),
+      fetchActiveBatchData(),
       trgQuery.refetch(),
       trsQuery.refetch(),
-      lossesQuery.refetch(),
       piQuery.refetch(),
     ]);
     setRefreshing(false);
@@ -364,11 +472,19 @@ export default function DashboardScreen() {
     [latestRow, previousRow, t]
   );
 
+  const groupedCounters = useMemo(() => {
+    const counts: Record<string, number> = {};
+    batchCards.forEach((card) => {
+      const machine = card.current_machine || 'Unknown';
+      counts[machine] = (counts[machine] || 0) + 1;
+    });
+    return counts;
+  }, [batchCards]);
+
   const isInitialLoading =
-    sensorsQuery.isLoading &&
+    isLoadingSensorsAndLosses &&
     trgQuery.isLoading &&
     trsQuery.isLoading &&
-    lossesQuery.isLoading &&
     piQuery.isLoading;
 
   if (isInitialLoading) {
@@ -430,6 +546,83 @@ export default function DashboardScreen() {
             palette={palette}
           />
         </View>
+
+        {/* Real-time active batch tracker counters */}
+        {activeBatchId ? (
+          <View style={[styles.sectionCard, { backgroundColor: palette.background, borderColor: palette.border }]}>
+            <View style={styles.activeBatchHeader}>
+              <View style={styles.batchInfoContainer}>
+                <View style={styles.activeDotWrapper}>
+                  <View style={[styles.activeDot, { backgroundColor: SUCCESS_COLOR }]} />
+                  <Text style={[styles.activeBatchTitle, { color: palette.text }]}>Active Batch</Text>
+                </View>
+                <Text style={[styles.activeBatchRefText, { color: palette.textSecondary }]}>Ref: {activeCardRef}</Text>
+              </View>
+              <Text style={[styles.activeBatchNum, { color: palette.primary }]}>{activeBatchNum}</Text>
+            </View>
+
+            {/* Progress bar */}
+            <View style={styles.progressBarWrapper}>
+              <View style={styles.progressTextRow}>
+                <Text style={[styles.progressText, { color: palette.text }]}>
+                  Scanned: {batchCards.length} / {activeTargetQty}
+                </Text>
+                <Text style={[styles.progressPercentText, { color: palette.primary }]}>
+                  {Math.round((batchCards.length / (activeTargetQty || 1)) * 100)}%
+                </Text>
+              </View>
+              <View style={[styles.progressBarBg, { backgroundColor: palette.border }]}>
+                <View 
+                  style={[
+                    styles.progressBarFill, 
+                    { 
+                      backgroundColor: palette.primary,
+                      width: `${Math.min(100, Math.round((batchCards.length / (activeTargetQty || 1)) * 100))}%` 
+                    }
+                  ]} 
+                />
+              </View>
+            </View>
+
+            <View style={[styles.sensorDivider, { backgroundColor: palette.border, marginVertical: spacing.md }]} />
+
+            <Text style={[styles.cardTitle, { color: palette.text, marginBottom: spacing.sm }]}>Location Counters</Text>
+
+            {Object.keys(groupedCounters).length === 0 ? (
+              <Text style={[styles.emptyBatchText, { color: palette.textTertiary }]}>No card scans recorded for this batch yet.</Text>
+            ) : (
+              <View style={styles.countersGrid}>
+                {Object.entries(groupedCounters).map(([machine, count]) => (
+                  <View key={machine} style={[styles.counterBox, { backgroundColor: palette.backgroundSecondary, borderColor: palette.border }]}>
+                    <Text style={[styles.counterBoxLabel, { color: palette.textSecondary }]} numberOfLines={1}>
+                      {machine}
+                    </Text>
+                    <Text style={[styles.counterBoxCount, { color: palette.primary }]}>
+                      {count} / {activeTargetQty}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+        ) : (
+          <View style={[styles.sectionCard, { backgroundColor: palette.background, borderColor: palette.border }]}>
+            <View style={styles.noBatchWrapper}>
+              <Ionicons name="construct-outline" size={28} color={palette.textTertiary} />
+              <Text style={[styles.noBatchTitle, { color: palette.text }]}>No Active Batch</Text>
+              <Text style={[styles.noBatchText, { color: palette.textSecondary }]}>
+                Go to settings to start a production batch and monitor live card counters here.
+              </Text>
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => router.push('/settings')}
+                style={[styles.noBatchBtn, { backgroundColor: palette.primary }]}
+              >
+                <Text style={styles.noBatchBtnText}>Configure Settings</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
 
         <View style={[styles.sectionCard, { backgroundColor: palette.background, borderColor: palette.border }]}>
           <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('realtimeSensors')}</Text>
@@ -776,6 +969,122 @@ const styles = StyleSheet.create({
   },
   fullStatsText: {
     ...typography.bodyBold,
+    color: '#FFFFFF',
+  },
+  activeBatchHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
+  },
+  batchInfoContainer: {
+    gap: 2,
+  },
+  activeDotWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  activeDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  activeBatchTitle: {
+    ...typography.bodyBold,
+    fontSize: 16,
+  },
+  activeBatchRefText: {
+    ...typography.tiny,
+  },
+  activeBatchNum: {
+    ...typography.bodyBold,
+    fontSize: 14,
+  },
+  progressBarWrapper: {
+    gap: 6,
+    marginBottom: spacing.xs,
+  },
+  progressTextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  progressText: {
+    ...typography.smallBold,
+  },
+  progressPercentText: {
+    ...typography.smallBold,
+  },
+  progressBarBg: {
+    height: 8,
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    borderRadius: 4,
+  },
+  cardTitle: {
+    ...typography.bodyBold,
+    fontSize: 14,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  emptyBatchText: {
+    ...typography.small,
+    textAlign: 'center',
+    paddingVertical: spacing.md,
+  },
+  countersGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  counterBox: {
+    flex: 1,
+    minWidth: '28%',
+    borderWidth: 1,
+    borderRadius: borderRadius.lg,
+    padding: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  counterBoxCount: {
+    ...typography.h3,
+    fontWeight: '800',
+  },
+  counterBoxLabel: {
+    ...typography.tiny,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  noBatchWrapper: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.md,
+    gap: spacing.sm,
+  },
+  noBatchTitle: {
+    ...typography.bodyBold,
+    fontSize: 15,
+  },
+  noBatchText: {
+    ...typography.tiny,
+    textAlign: 'center',
+    paddingHorizontal: spacing.md,
+  },
+  noBatchBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: borderRadius.md,
+    marginTop: spacing.xs,
+    ...shadows.xs,
+  },
+  noBatchBtnText: {
+    ...typography.captionBold,
     color: '#FFFFFF',
   },
 });

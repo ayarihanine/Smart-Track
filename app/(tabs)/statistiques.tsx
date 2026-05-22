@@ -100,6 +100,23 @@ function SensorProductionChart({
           </SvgGradient>
         </Defs>
 
+        {/* Horizontal background gridlines */}
+        {[0.25, 0.5, 0.75].map((ratio) => {
+          const y = chartHeight - ratio * (chartHeight - 16);
+          return (
+            <Line
+              key={`grid-${ratio}`}
+              x1={leftPad}
+              y1={y}
+              x2={chartWidth - 12}
+              y2={y}
+              stroke={palette.border}
+              strokeWidth="1"
+              strokeDasharray="4,4"
+            />
+          );
+        })}
+
         <Line
           x1={leftPad}
           y1={chartHeight}
@@ -150,8 +167,19 @@ function SensorProductionChart({
 }
 
 export default function StatisticsScreen() {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const { palette, isDark } = useTheme();
+
+  const unitCostLabelText = useMemo(() => {
+    switch (language) {
+      case 'fr':
+        return "Coût unitaire d'une carte";
+      case 'ar':
+        return "تكلفة وحدة البطاقة";
+      default:
+        return "Card Unit Cost";
+    }
+  }, [language]);
 
   const lossesQuery = useQuery<PerteParJour[]>({
     queryKey: ['production', 'stats', 'losses-per-day'],
@@ -214,22 +242,11 @@ export default function StatisticsScreen() {
   return (
     <View style={[styles.container, { backgroundColor: palette.backgroundSecondary }]}>
       {/* Immersive Hero Header */}
-      <Animated.View entering={FadeInUp.duration(600).springify()} style={[styles.heroBanner, { shadowColor: isDark ? '#38BDF8' : palette.border, borderBottomColor: palette.border, borderBottomWidth: 1 }]}>
-        <LinearGradient
-          colors={isDark ? ['#0F172A', '#1E293B'] : [palette.background, palette.backgroundSecondary]}
-          style={StyleSheet.absoluteFill}
-          start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
-        />
-        <View style={[styles.heroOrb, { backgroundColor: isDark ? '#38BDF8' : '#60a5fa', opacity: isDark ? 0.1 : 0.05 }]} />
-        
+      <Animated.View entering={FadeInUp.duration(600).springify()} style={[styles.heroBanner, { backgroundColor: palette.background, shadowColor: isDark ? '#38BDF8' : palette.border, borderBottomColor: palette.border, borderBottomWidth: 1 }]}>
         <SafeAreaView edges={['top']}>
           <View style={styles.heroContent}>
             <View style={styles.heroTitleRow}>
-              <Text style={[styles.heroTitle, { color: palette.text }]}>{t('statsTitle' as any) || 'Statistics'}</Text>
-              <View style={[styles.heroBadge, { backgroundColor: isDark ? 'rgba(56, 189, 248, 0.15)' : 'rgba(37, 99, 235, 0.1)', borderColor: isDark ? 'rgba(56, 189, 248, 0.3)' : 'rgba(37, 99, 235, 0.2)' }]}>
-                <Ionicons name="bar-chart" size={14} color={isDark ? '#38BDF8' : '#2563eb'} />
-                <Text style={[styles.heroBadgeText, { color: isDark ? '#38BDF8' : '#2563eb' }]}>Live Data</Text>
-              </View>
+              <Text style={[styles.heroTitle, { color: palette.text }]}>{t('statisticsTab') || 'Statistics'}</Text>
             </View>
           </View>
         </SafeAreaView>
@@ -258,40 +275,34 @@ export default function StatisticsScreen() {
         }
         showsVerticalScrollIndicator={false}
       >
-        <Animated.View entering={FadeInDown.delay(100).duration(600).springify()} style={[styles.unitCostCard, { borderColor: isDark ? '#1e40af' : '#bfdbfe', shadowColor: isDark ? '#38BDF8' : '#2563eb' }]}>
+        <Animated.View 
+          entering={FadeInDown.delay(100).duration(600).springify()} 
+          style={[styles.unitCostCard, { borderColor: palette.border }]}
+        >
           <LinearGradient
-            colors={isDark ? ['#1e3a8a', '#172554'] : ['#eff6ff', '#dbeafe']}
-            style={StyleSheet.absoluteFill}
-            start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+            colors={isDark ? ['#1e293b', '#0f172a'] : ['#eff6ff', '#dbeafe']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={StyleSheet.absoluteFillObject}
           />
-          {/* Glowing orb background effect */}
-          <View style={[styles.glowOrb, { backgroundColor: isDark ? '#38BDF8' : '#60a5fa' }]} />
-          
           <View style={styles.unitCostInner}>
             <View style={styles.unitCostContent}>
               <View style={styles.unitCostHeader}>
-                <Ionicons name="analytics-outline" size={20} color={isDark ? '#38BDF8' : '#2563eb'} style={{ marginRight: 8 }} />
-                <Text style={[styles.unitCostLabel, { color: isDark ? '#93c5fd' : '#3b82f6' }]}>
-                  {t('unitCostLabel' as any) || 'Card Unit Cost'}
+                <Ionicons name="analytics-outline" size={20} color={palette.primary} style={{ marginRight: 8 }} />
+                <Text style={[styles.unitCostLabel, { color: isDark ? '#94a3b8' : '#4b5563' }]}>
+                  {unitCostLabelText}
                 </Text>
               </View>
               <View style={styles.unitCostRow}>
-                <Text style={[styles.unitCostValue, { color: isDark ? '#FFFFFF' : '#1e3a8a' }]}>
+                <Text style={[styles.unitCostValue, { color: palette.text }]}>
                   {(costQuery.data ?? 0).toFixed(3)}
                 </Text>
-                <Text style={[styles.unitCostCurrency, { color: isDark ? '#38BDF8' : '#2563eb' }]}>TND</Text>
+                <Text style={[styles.unitCostCurrency, { color: palette.primary }]}>TND</Text>
               </View>
             </View>
             
-            <View style={[styles.unitCostIconWrap, { backgroundColor: isDark ? 'transparent' : '#2563eb20' }]}>
-              {isDark && (
-                <LinearGradient
-                  colors={['#38BDF8', '#0284C7']}
-                  style={StyleSheet.absoluteFill}
-                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
-                />
-              )}
-              <Ionicons name="cash" size={28} color={isDark ? '#FFFFFF' : '#2563eb'} />
+            <View style={[styles.unitCostIconWrap, { backgroundColor: isDark ? '#0f172a' : '#ffffff' }]}>
+              <Ionicons name="cash" size={28} color={palette.primary} />
             </View>
           </View>
         </Animated.View>
@@ -391,15 +402,7 @@ const styles = StyleSheet.create({
     elevation: 8,
     marginBottom: spacing.sm,
   },
-  heroOrb: {
-    position: 'absolute',
-    top: -50,
-    right: -50,
-    width: 200,
-    height: 200,
-    borderRadius: 100,
-    transform: [{ scale: 1.5 }],
-  },
+
   heroContent: {
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.lg,
@@ -465,16 +468,7 @@ const styles = StyleSheet.create({
     elevation: 10,
     borderWidth: 1,
   },
-  glowOrb: {
-    position: 'absolute',
-    top: -50,
-    right: -20,
-    width: 150,
-    height: 150,
-    borderRadius: 75,
-    opacity: 0.15,
-    transform: [{ scale: 1.5 }],
-  },
+
   unitCostInner: {
     flexDirection: 'row',
     alignItems: 'center',

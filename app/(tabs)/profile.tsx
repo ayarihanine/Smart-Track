@@ -12,7 +12,7 @@ import { useAuthStore } from '@/store/authStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
-import { testWebhook, getCards } from '@/lib/api';
+import { getCards } from '@/lib/api';
 import { UserRole } from '@/types';
 import * as ImagePicker from 'expo-image-picker';
 import * as Print from 'expo-print';
@@ -99,35 +99,18 @@ export default function ProfileScreen() {
   const { t } = useTranslation();
   const { palette, isDark } = useTheme();
 
-  const [editingWebhook, setEditingWebhook] = useState(false);
-  const [testingWebhook, setTestingWebhook] = useState(false);
   const [generatingReport, setGeneratingReport] = useState(false);
-  const [tempWebhook, setTempWebhook] = useState(settings.webhookUrl);
-  const [tempN8n, setTempN8n] = useState(settings.n8nUrl);
 
   const roleColor = ROLE_COLORS[user?.role || 'operator'];
   const roleIcon = ROLE_ICONS[user?.role || 'operator'];
 
-  async function handleSaveWebhook() {
-    await settings.setSettings({ webhookUrl: tempWebhook, n8nUrl: tempN8n });
-    setEditingWebhook(false);
-    Alert.alert(t('success'), t('webhookUpdated'));
-  }
+
 
   async function handleToggle(key: 'notificationsEnabled' | 'vibrationEnabled', val: boolean) {
     await settings.setSettings({ [key]: val });
   }
 
-  async function handleTestWebhook() {
-    if (!tempWebhook) {
-      Alert.alert(t('error'), t('enterWebhookFirst'));
-      return;
-    }
-    setTestingWebhook(true);
-    const ok = await testWebhook(tempWebhook);
-    setTestingWebhook(false);
-    Alert.alert(ok ? t('success') : t('error'), ok ? t('connectionEstablished') : t('connectionRefused'));
-  }
+
 
   async function handleImagePick() {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -143,8 +126,6 @@ export default function ProfileScreen() {
       if (!supabase || !user) return;
 
       try {
-        setTestingWebhook(true);
-
         const { error } = await supabase.auth.updateUser({
           data: { avatarUrl: uri }
         });
@@ -156,8 +137,6 @@ export default function ProfileScreen() {
         Alert.alert(t('success'), "Profile picture updated!");
       } catch (err: any) {
         Alert.alert(t('error'), err.message || "Failed to update profile picture");
-      } finally {
-        setTestingWebhook(false);
       }
     }
   }
@@ -480,68 +459,7 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        <View style={styles.section}>
-          <SectionHeader title={t('integrations')} color={palette.textSecondary} />
-          <View style={[styles.card, { backgroundColor: palette.background }]}>
-            <View style={styles.webhookHeader}>
-              <View style={[styles.settingIcon, { backgroundColor: '#F59E0B15' }]}>
-                <Ionicons name="link" size={20} color="#F59E0B" />
-              </View>
-              <Text style={[styles.webhookTitle, { color: palette.text }]}>{t('dataHook')}</Text>
-              <TouchableOpacity onPress={() => setEditingWebhook(!editingWebhook)}>
-                <Ionicons name={editingWebhook ? 'close' : 'pencil'} size={18} color={palette.primary} />
-              </TouchableOpacity>
-            </View>
-            {editingWebhook ? (
-              <View style={styles.webhookEdit}>
-                <TextInput
-                  style={[styles.webhookInput, { backgroundColor: palette.backgroundSecondary, color: palette.text, borderColor: palette.border }]}
-                  placeholder="Primary Webhook URL"
-                  placeholderTextColor={palette.textTertiary}
-                  value={tempWebhook}
-                   onChangeText={setTempWebhook}
-                  autoCapitalize="none"
-                />
-                <View style={{ height: spacing.sm }} />
-                <TextInput
-                  style={[styles.webhookInput, { backgroundColor: palette.backgroundSecondary, color: palette.text, borderColor: palette.border }]}
-                  placeholder={t('n8nUrlPlaceholder')}
-                  placeholderTextColor={palette.textTertiary}
-                  value={tempN8n}
-                  onChangeText={setTempN8n}
-                  autoCapitalize="none"
-                />
-                <View style={styles.webhookBtns}>
-                  <TouchableOpacity
-                    style={styles.webhookTestBtn}
-                    onPress={handleTestWebhook}
-                    disabled={testingWebhook}
-                  >
-                    <Ionicons name="pulse" size={16} color="#F59E0B" />
-                    <Text style={styles.webhookTestText}>{testingWebhook ? t('testing') : t('test')}</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.webhookSaveBtn, { backgroundColor: palette.primary }]}
-                    onPress={handleSaveWebhook}
-                  >
-                    <Text style={styles.webhookSaveText}>{t('save')}</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ) : (
-              <View style={styles.webhookPreviewContainer}>
-                <Text style={[styles.webhookPreview, { color: palette.textSecondary }]}>
-                  <Text style={{ fontWeight: '600' }}>Hook: </Text>
-                  {settings.webhookUrl || t('disconnected')}
-                </Text>
-                <Text style={[styles.webhookPreview, { color: palette.textSecondary, marginTop: 4 }]}>
-                  <Text style={{ fontWeight: '600' }}>n8n: </Text>
-                  {settings.n8nUrl || t('disconnected')}
-                </Text>
-              </View>
-            )}
-          </View>
-        </View>
+
 
         <View style={styles.section}>
           <TouchableOpacity
@@ -681,32 +599,7 @@ const styles = StyleSheet.create({
     width: 28, height: 28, borderRadius: 8,
     alignItems: 'center', justifyContent: 'center',
   },
-  webhookHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, padding: spacing.md },
-  webhookTitle: { ...typography.body, fontWeight: '500', flex: 1 },
-  webhookEdit: { paddingHorizontal: spacing.md, paddingBottom: spacing.md },
-  webhookInput: {
-    borderWidth: 1,
-    borderRadius: borderRadius.md, paddingHorizontal: spacing.md,
-    height: 44, ...typography.body,
-  },
-  webhookBtns: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
-  webhookTestBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: spacing.xs, height: 40, borderRadius: borderRadius.md,
-    borderWidth: 1.5, borderColor: '#F59E0B',
-  },
-  webhookTestText: { ...typography.captionBold, color: '#F59E0B' },
-  webhookSaveBtn: {
-    flex: 1, alignItems: 'center', justifyContent: 'center',
-    height: 40, borderRadius: borderRadius.md,
-  },
-  webhookSaveText: { ...typography.captionBold, color: colors.white },
-  webhookPreviewContainer: {
-    paddingHorizontal: spacing.md, paddingBottom: spacing.md,
-  },
-  webhookPreview: {
-    ...typography.small,
-  },
+
   signOutBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: spacing.sm,

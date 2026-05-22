@@ -1,11 +1,10 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
 import { useTranslation } from '@/hooks/useTranslation';
@@ -13,6 +12,7 @@ import { useTranslation } from '@/hooks/useTranslation';
 import { getScanEvents } from '@/lib/api';
 import { ScanEvent } from '@/types';
 import { useRoleGuard } from '@/hooks/useRoleGuard';
+import { getSupabaseClient } from '@/lib/supabase';
 
 function ActivityItem({ item, palette }: { item: ScanEvent; palette: any }) {
     const { t } = useTranslation();
@@ -51,10 +51,41 @@ export default function ActivityFeedScreen() {
     const { t } = useTranslation();
     const { palette } = useTheme();
 
-    const { data: events, isLoading, refetch } = useQuery({
-        queryKey: ['scan-events'],
-        queryFn: () => getScanEvents(),
-    });
+    const [events, setEvents] = useState<ScanEvent[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+
+    const fetchEvents = async () => {
+        try {
+            const data = await getScanEvents();
+            setEvents(data || []);
+        } catch (error) {
+            console.error('fetchEvents failed:', error);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        fetchEvents();
+
+        const supabase = getSupabaseClient();
+        if (!supabase) return;
+
+        const channel = supabase
+            .channel('activity-feed-live')
+            .on(
+                'postgres_changes',
+                { event: '*', schema: 'public', table: 'scan_events' },
+                () => {
+                    fetchEvents();
+                }
+            )
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(channel);
+        };
+    }, []);
 
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
@@ -63,7 +94,7 @@ export default function ActivityFeedScreen() {
                     <Ionicons name="chevron-back" size={24} color={palette.text} />
                 </TouchableOpacity>
                 <Text style={[styles.headerTitle, { color: palette.text }]}>{t('activityFeed')}</Text>
-                <TouchableOpacity onPress={() => refetch()} style={styles.refreshBtn}>
+                <TouchableOpacity onPress={() => fetchEvents()} style={styles.refreshBtn}>
                     <Ionicons name="refresh" size={20} color={palette.primary} />
                 </TouchableOpacity>
             </View>
@@ -74,7 +105,7 @@ export default function ActivityFeedScreen() {
                 renderItem={({ item }) => <ActivityItem item={item} palette={palette} />}
                 contentContainerStyle={styles.listContent}
                 refreshControl={
-                    <RefreshControl refreshing={isLoading} onRefresh={refetch} tintColor={palette.primary} />
+                    <RefreshControl refreshing={isLoading} onRefresh={fetchEvents} tintColor={palette.primary} />
                 }
                 ListEmptyComponent={
                     !isLoading ? (

@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList,
   Modal, Pressable, Alert, Animated, RefreshControl
@@ -7,12 +7,12 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
 import { getCards, deleteCard } from '@/lib/api';
 import { ElectronicCard, FilterOptions } from '@/types';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
+import { getSupabaseClient } from '@/lib/supabase';
 
 function CardRow({ 
   card, 
@@ -101,17 +101,56 @@ export default function HistoryScreen() {
     { value: 'id_asc', label: t('idAsc' as any) },
   ];
 
-  const { data: cards = [], refetch, isLoading, isRefetching } = useQuery({
-    queryKey: ['cards', filters],
-    queryFn: () => getCards(filters),
-  });
+  const [cards, setCards] = useState<ElectronicCard[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefetching, setIsRefetching] = useState(false);
 
-  // Automatically refetch when the screen is focused to solve "nothing appears" bug
+  const fetchCards = useCallback(async (showLoading = true) => {
+    if (showLoading) {
+      setIsLoading(true);
+    } else {
+      setIsRefetching(true);
+    }
+    try {
+      const data = await getCards(filters);
+      setCards(data || []);
+    } catch (error) {
+      console.error('fetchCards failed:', error);
+    } finally {
+      setIsLoading(false);
+      setIsRefetching(false);
+    }
+  }, [filters]);
+
+  useEffect(() => {
+    fetchCards(true);
+  }, [fetchCards]);
+
   useFocusEffect(
     useCallback(() => {
-      refetch();
-    }, [refetch])
+      fetchCards(false);
+    }, [fetchCards])
   );
+
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    const channel = supabase
+      .channel('history-cards-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'electronic_cards' },
+        () => {
+          fetchCards(false);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [fetchCards]);
 
   const completedCount = cards.filter(c => c.status === 'completed').length;
   const inProgressCount = cards.filter(c => c.status === 'in_progress').length;
@@ -174,7 +213,7 @@ export default function HistoryScreen() {
           onPress: async () => {
             const success = await deleteCard(cardId);
             if (success) {
-              refetch();
+              fetchCards(false);
             } else {
               Alert.alert(t('error' as any), t('deleteFailed' as any));
             }
@@ -194,7 +233,7 @@ export default function HistoryScreen() {
         </View>
         <TouchableOpacity 
           style={[styles.refreshBtn, { backgroundColor: palette.primary + '10' }]} 
-          onPress={() => refetch()} 
+          onPress={() => fetchCards(false)} 
           disabled={isRefetching}
         >
           <Ionicons 
@@ -273,7 +312,7 @@ export default function HistoryScreen() {
         refreshControl={
           <RefreshControl 
             refreshing={isRefetching} 
-            onRefresh={refetch} 
+            onRefresh={() => fetchCards(false)} 
             tintColor={palette.primary}
             colors={[palette.primary]}
           />

@@ -5,6 +5,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import * as XLSX from 'xlsx';
+import { getCards } from '@/lib/api';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
 import { colors, spacing, typography, borderRadius } from '@/constants/design';
@@ -20,35 +22,38 @@ export default function DailyReportScreen() {
     setErrorMsg(null);
 
     try {
+      const cards = await getCards();
+      
       const date = new Date();
       const yyyy = date.getFullYear();
       const mm = String(date.getMonth() + 1).padStart(2, '0');
       const dd = String(date.getDate()).padStart(2, '0');
       const dateString = `${yyyy}-${mm}-${dd}`;
 
-      const url = `https://gtjjxfwlixcrfniwvnzu.supabase.co/storage/v1/object/public/reports/CardTrack_Daily_Report_${dateString}.xlsx`;
-      const fileUri = `${FileSystem.documentDirectory}CardTrack_Daily_Report_${dateString}.xlsx`;
+      // Filter for today's cards
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      const todaysCards = cards.filter(c => new Date(c.createdAt) >= startOfToday || new Date(c.updatedAt) >= startOfToday);
 
-      // Check if file exists in the server first to provide a better error
-      const response = await fetch(url, { method: 'HEAD' });
-      if (!response.ok) {
-        throw new Error(t('reportNotFound') || 'Report not found for today. It might not be generated yet.');
-      }
+      const dataToExport = todaysCards.length > 0 ? todaysCards : cards;
 
-      const downloadRes = await FileSystem.downloadAsync(url, fileUri);
+      const worksheet = XLSX.utils.json_to_sheet(dataToExport);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "DailyProduction");
+      
+      const wbout = XLSX.write(workbook, { type: 'base64', bookType: 'xlsx' });
+      const fileUri = `${FileSystem.cacheDirectory}CardTrack_Daily_Report_${dateString}.xlsx`;
 
-      if (downloadRes.status === 200) {
-        if (await Sharing.isAvailableAsync()) {
-          await Sharing.shareAsync(downloadRes.uri, {
-            mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            dialogTitle: t('downloadTodayReport') || "Today's Report",
-            UTI: 'com.microsoft.excel.xlsx'
-          });
-        } else {
-          Alert.alert(t('error') || 'Error', t('sharingNotAvailable') || 'Sharing is not available on this device');
-        }
+      await FileSystem.writeAsStringAsync(fileUri, wbout, { encoding: FileSystem.EncodingType.Base64 });
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          dialogTitle: t('downloadTodayReport') || "Today's Report",
+          UTI: 'com.microsoft.excel.xlsx'
+        });
       } else {
-        throw new Error(t('downloadFailed') || 'Failed to download the report.');
+        Alert.alert(t('error') || 'Error', t('sharingNotAvailable') || 'Sharing is not available on this device');
       }
     } catch (error: any) {
       console.error('Download error:', error);

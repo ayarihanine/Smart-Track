@@ -7,7 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as XLSX from 'xlsx';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getCards } from '@/lib/api';
@@ -57,6 +57,7 @@ export default function ExportScreen() {
   const [format, setFormat] = useState<ExportFormat>('json');
   const [scope, setScope] = useState<ExportScope>('all');
   const [exporting, setExporting] = useState(false);
+  const [generatingPdf, setGeneratingPdf] = useState(false);
   const [recentReports, setRecentReports] = useState<GeneratedReport[]>([]);
 
   React.useEffect(() => {
@@ -140,7 +141,8 @@ export default function ExportScreen() {
   }
 
   async function handleGeneratePdf() {
-    setExporting(true);
+    if (generatingPdf) return;
+    setGeneratingPdf(true);
     try {
       const cards = await getCards();
       const now = new Date().toLocaleString();
@@ -234,7 +236,7 @@ export default function ExportScreen() {
       console.error('PDF Generation Error:', error);
       Alert.alert(t('error'), 'Could not generate or share PDF report');
     } finally {
-      setExporting(false);
+      setGeneratingPdf(false);
     }
   }
 
@@ -341,9 +343,9 @@ export default function ExportScreen() {
         {/* Export Action */}
         <View style={styles.section}>
           <TouchableOpacity
-            style={[styles.exportBtn, exporting && styles.exportBtnDisabled]}
+            style={[styles.exportBtn, (exporting || generatingPdf) && styles.exportBtnDisabled]}
             onPress={handleExport}
-            disabled={exporting}
+            disabled={exporting || generatingPdf}
             activeOpacity={0.8}
           >
             {exporting ? (
@@ -361,12 +363,12 @@ export default function ExportScreen() {
           <View style={{ height: spacing.md }} />
           
           <TouchableOpacity
-            style={[styles.pdfBtn, exporting && styles.exportBtnDisabled]}
+            style={[styles.pdfBtn, (exporting || generatingPdf) && styles.exportBtnDisabled]}
             onPress={handleGeneratePdf}
-            disabled={exporting}
+            disabled={exporting || generatingPdf}
             activeOpacity={0.8}
           >
-            {exporting ? (
+            {generatingPdf ? (
               <ActivityIndicator color="#8B5CF6" />
             ) : (
               <>

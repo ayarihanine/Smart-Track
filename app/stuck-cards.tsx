@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
   RefreshControl, Alert, ActivityIndicator,
@@ -6,7 +6,6 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
 import { useTranslation } from '@/hooks/useTranslation';
@@ -14,6 +13,8 @@ import { useTheme } from '@/components/ThemeProvider';
 import { getCards, alertTestingTeam } from '@/lib/api';
 import { useSettingsStore } from '@/store/settingsStore';
 import { ElectronicCard } from '@/types';
+import { getSupabaseClient } from '@/lib/supabase';
+import { getActiveElapsedMs } from '@/store/alertsStore';
 
 export default function StuckCardsScreen() {
   const { t } = useTranslation();
@@ -21,30 +22,73 @@ export default function StuckCardsScreen() {
   const stuckThreshold = useSettingsStore(s => s.stuckCardThresholdHours);
   const [alertingId, setAlertingId] = useState<string | null>(null);
 
-  const { data: cards, isLoading, refetch } = useQuery({
-    queryKey: ['cards', 'stuck'],
-    queryFn: () => getCards(),
-  });
+  const [alertSent, setAlertSent] = useState<Record<string, boolean>>({});
+  const [cards, setCards] = useState<ElectronicCard[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const fetchCards = async () => {
+    try {
+      const data = await getCards();
+      setCards(data || []);
+    } catch (error) {
+      console.error('fetchCards failed:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchCards();
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    const channel = supabase
+      .channel('stuck-cards-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'electronic_cards' },
+        () => {
+          fetchCards();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   const thresholdMs = Math.max(0.1, stuckThreshold) * 60 * 60 * 1000;
-  const stuckCards = (cards || []).filter(c => 
-    c.status !== 'completed' && (Date.now() - new Date(c.updatedAt).getTime()) > thresholdMs
-  ).sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
+  const stuckCards = (cards || []).filter(c => {
+    const timeInactive = getActiveElapsedMs(
+      c.stageEnteredAt || c.updatedAt,
+      8,
+      17
+    );
+    return c.status !== 'completed' && timeInactive > thresholdMs;
+  }).sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
 
   const handleAlertTesting = async (card: ElectronicCard) => {
+    if (alertSent[card.cardId]) return;
     setAlertingId(card.cardId);
     const ok = await alertTestingTeam(card.cardId, card.currentStage);
     setAlertingId(null);
     if (ok) {
+      setAlertSent(prev => ({ ...prev, [card.cardId]: true }));
       Alert.alert(t('success'), t('alertSent'));
     } else {
       Alert.alert(t('error'), "Failed to send alert.");
     }
   };
 
-  const getStuckDuration = (updatedAt: string) => {
-    const diff = Date.now() - new Date(updatedAt).getTime();
-    const hours = Math.floor(diff / (1000 * 60 * 60));
+  const getStuckDuration = (card: ElectronicCard) => {
+    const activeMs = getActiveElapsedMs(
+      card.stageEnteredAt || card.updatedAt,
+      8,
+      17
+    );
+    const hours = Math.floor(activeMs / (1000 * 60 * 60));
     return t('stuckDuration').replace('{{hours}}', hours.toString());
   };
 
@@ -62,7 +106,7 @@ export default function StuckCardsScreen() {
       <ScrollView 
         style={styles.scroll} 
         contentContainerStyle={styles.scrollContent}
-        refreshControl={<RefreshControl refreshing={isLoading} onRefresh={refetch} tintColor={colors.primary} />}
+        refreshControl={<RefreshControl refreshing={isLoading} onRefresh={fetchCards} tintColor={colors.primary} />}
       >
         {isLoading ? (
           <View style={styles.centerContainer}>
@@ -92,7 +136,7 @@ export default function StuckCardsScreen() {
                 <View style={[styles.stuckBadge, { backgroundColor: colors.error + '15' }]}>
                   <Ionicons name="alert-circle" size={14} color={colors.error} />
                   <Text style={[styles.stuckBadgeText, { color: colors.error }]}>
-                    {getStuckDuration(card.updatedAt)}
+                    {getStuckDuration(card)}
                   </Text>
                 </View>
               </View>
@@ -117,16 +161,25 @@ export default function StuckCardsScreen() {
               </View>
 
               <TouchableOpacity 
-                style={[styles.alertBtn, { backgroundColor: colors.primary }]}
+                style={[
+                  styles.alertBtn, 
+                  { backgroundColor: alertSent[card.cardId] ? '#A0AEC0' : colors.primary }
+                ]}
                 onPress={() => handleAlertTesting(card)}
-                disabled={alertingId === card.cardId}
+                disabled={alertingId === card.cardId || !!alertSent[card.cardId]}
               >
                 {alertingId === card.cardId ? (
                   <ActivityIndicator size="small" color={colors.white} />
                 ) : (
                   <>
-                    <Ionicons name="megaphone-outline" size={18} color={colors.white} />
-                    <Text style={styles.alertBtnText}>{t('alertTestingTeam')}</Text>
+                    <Ionicons 
+                      name={alertSent[card.cardId] ? "checkmark-circle-outline" : "megaphone-outline"} 
+                      size={18} 
+                      color={colors.white} 
+                    />
+                    <Text style={styles.alertBtnText}>
+                      {alertSent[card.cardId] ? 'Alert Sent ✓' : t('alertTestingTeam')}
+                    </Text>
                   </>
                 )}
               </TouchableOpacity>

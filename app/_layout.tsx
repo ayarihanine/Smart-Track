@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useFrameworkReady } from '@/hooks/useFrameworkReady';
 import { useEffect } from 'react';
 import { useAuthStore } from '@/store/authStore';
-import { configureSupabaseAuthAutoRefresh } from '@/lib/supabase';
+import { configureSupabaseAuthAutoRefresh, getSupabaseClient } from '@/lib/supabase';
 import { useSettingsStore } from '@/store/settingsStore';
 import { ThemeProvider, useTheme } from '@/components/ThemeProvider';
 import { useTranslation } from '@/hooks/useTranslation';
@@ -39,6 +39,32 @@ function AuthListener() {
   }, []);
 
 
+
+  useEffect(() => {
+    if (user?.id) {
+      const loadUserDbSettings = async () => {
+        try {
+          const supabase = getSupabaseClient();
+          if (supabase) {
+            const { data: userSettings } = await supabase
+              .from('user_settings')
+              .select('stuck_card_threshold_hours')
+              .eq('user_id', user.id)
+              .maybeSingle(); // MUST use maybeSingle, not single — no error if row missing
+
+            if (userSettings?.stuck_card_threshold_hours !== undefined) {
+              useSettingsStore.setState({
+                stuckCardThresholdHours: userSettings.stuck_card_threshold_hours,
+              });
+            }
+          }
+        } catch (err) {
+          console.error('Failed to load stuck card threshold from user_settings:', err);
+        }
+      };
+      loadUserDbSettings();
+    }
+  }, [user?.id]);
 
   useEffect(() => {
     if (hasSeenOnboarding === false) {

@@ -3,9 +3,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   ElectronicCard, ScanEvent, AppSettings, AnalyticsData, SystemNode, FilterOptions,
   LeaderboardEntry, UserProfile, Issue, Task, Comment, Product, LoadingPlanEntry, ComponentInsertion,
-  EtatCapteur, PertesTable, TRG, TRS, Configuration, Article,
-  PerteParJour, ProductionParJour, PerteParMachine, TodayLossSummary
+  EtatCapteur, SensorEvent, PertesTable, TRG, TRS, Configuration, Article,
+  PerteParJour, ProductionParJour, PerteParMachine, TodayLossSummary, ProductionBatch
 } from '@/types';
+import { getActiveElapsedMs } from '@/store/alertsStore';
 
 const OFFLINE_KEYS = {
   CARDS: 'smarttrack_offline_cards',
@@ -47,8 +48,122 @@ export async function getSettings(): Promise<AppSettings> {
   };
 }
 
-export async function saveSettings(settings: AppSettings): Promise<void> {
-  await AsyncStorage.setItem(OFFLINE_KEYS.SETTINGS, JSON.stringify(settings));
+export async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
+  let existing: any = {};
+  try {
+    const raw = await AsyncStorage.getItem(OFFLINE_KEYS.SETTINGS);
+    if (raw) {
+      existing = JSON.parse(raw);
+    }
+  } catch (err) {
+    console.error('Failed to read settings from AsyncStorage:', err);
+  }
+
+  const merged = { ...existing, ...settings };
+  await AsyncStorage.setItem(OFFLINE_KEYS.SETTINGS, JSON.stringify(merged));
+
+  const supabase = getSupabaseClient();
+  if (supabase && settings.stuckCardThresholdHours !== undefined) {
+    try {
+      const sessionRes = await supabase.auth.getSession();
+      const currentUserId = sessionRes?.data?.session?.user?.id;
+      if (currentUserId) {
+        const { error } = await supabase
+          .from('user_settings')
+          .upsert(
+            {
+              user_id: currentUserId,
+              stuck_card_threshold_hours: settings.stuckCardThresholdHours,
+            },
+            { onConflict: 'user_id' }
+          );
+        if (error) {
+          console.error('Failed to upsert to user_settings:', error);
+        }
+      }
+    } catch (supabaseErr) {
+      console.error('Error syncing stuckCardThresholdHours to Supabase:', supabaseErr);
+    }
+  }
+}
+
+export async function getCurrentBatchId(): Promise<string | null> {
+  try {
+    const storedBatchId = await AsyncStorage.getItem('current_batch_id');
+    if (storedBatchId) return storedBatchId;
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return null;
+
+    const { data, error } = await supabase
+      .from('production_batches')
+      .select('id, batch_number, card_reference, target_quantity')
+      .eq('status', 'active')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data) return null;
+
+    await AsyncStorage.multiSet([
+      ['current_batch_id', data.id],
+      ['current_batch_number', data.batch_number || ''],
+      ['current_batch_card_reference', data.card_reference || ''],
+      ['current_batch_target_quantity', String(data.target_quantity || 0)],
+    ]);
+
+    return data.id;
+  } catch (error) {
+    console.error('getCurrentBatchId failed', error);
+    return null;
+  }
+}
+
+export function calculateProgressPercent(totalReq: number | null | undefined, totalIns: number | null | undefined): number {
+  if (!totalReq || totalReq <= 0) return 0;
+  const ins = totalIns || 0;
+  return Math.min(100, Math.round((ins / totalReq) * 100));
+}
+
+export async function calculateProgress(cardId: string): Promise<number> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return 0;
+
+  try {
+    const { data: cards, error: cardError } = await supabase
+      .from('electronic_cards')
+      .select('id, product_id')
+      .eq('card_id', cardId)
+      .limit(1);
+
+    if (cardError || !cards || cards.length === 0) return 0;
+    const cardUuid = cards[0].id;
+    const productId = cards[0].product_id;
+
+    if (!productId) return 0;
+
+    const { data: insertions, error: insError } = await supabase
+      .from('component_insertions')
+      .select('inserted_quantity')
+      .eq('card_id', cardUuid);
+
+    if (insError || !insertions) return 0;
+
+    const { data: loadingPlan, error: lpError } = await supabase
+      .from('loading_plans')
+      .select('required_quantity')
+      .eq('product_id', productId);
+
+    if (lpError || !loadingPlan || loadingPlan.length === 0) return 0;
+
+    const totalReq = loadingPlan.reduce((acc: number, entry: any) => acc + (entry.required_quantity || 0), 0);
+    const totalIns = insertions.reduce((acc: number, entry: any) => acc + (entry.inserted_quantity || 0), 0);
+
+    return calculateProgressPercent(totalReq, totalIns);
+  } catch (error) {
+    console.error('calculateProgress failed', error);
+    return 0;
+  }
 }
 
 // ============================================================================
@@ -96,7 +211,7 @@ export async function getCards(filters?: FilterOptions): Promise<ElectronicCard[
       if (card.loadingPlan && card.loadingPlan.length > 0) {
         const totalReq = card.loadingPlan.reduce((acc, p) => acc + p.requiredQuantity, 0);
         const totalIns = card.componentInsertions?.reduce((acc, c) => acc + c.insertedQuantity, 0) || 0;
-        card.progressPercent = totalReq > 0 ? Math.min(100, Math.round((totalIns / totalReq) * 100)) : 0;
+        card.progressPercent = calculateProgressPercent(totalReq, totalIns);
       }
     }
 
@@ -135,7 +250,7 @@ export async function getCard(cardId: string): Promise<ElectronicCard | null> {
     if (card.loadingPlan && card.loadingPlan.length > 0) {
       const totalReq = card.loadingPlan.reduce((acc, p) => acc + p.requiredQuantity, 0);
       const totalIns = card.componentInsertions?.reduce((acc, c) => acc + c.insertedQuantity, 0) || 0;
-      card.progressPercent = totalReq > 0 ? Math.min(100, Math.round((totalIns / totalReq) * 100)) : 0;
+      card.progressPercent = calculateProgressPercent(totalReq, totalIns);
       
       // If we achieved required total, it's completed
       if (card.progressPercent >= 100) {
@@ -195,15 +310,7 @@ export async function deleteCard(cardIdOrUuid: string): Promise<boolean> {
 
     if (error) throw error;
 
-    // Trigger webhook for deletion
-    const settings = await getSettings();
-    if (settings.webhookUrl || settings.n8nUrl) {
-      fireWebhook(settings.webhookUrl || settings.n8nUrl, {
-        event: 'card_deleted',
-        cardId: displayCardId,
-        timestamp: new Date().toISOString(),
-      }).catch(() => { });
-    }
+
 
     return true;
   } catch (error) {
@@ -222,14 +329,21 @@ export async function createCard(cardId: string, productId: string): Promise<Ele
     currentMachine = plans[0].machineReference || currentMachine;
   }
 
+  const currentBatchId = await getCurrentBatchId();
+  const insertPayload: Record<string, any> = {
+    card_id: cardId,
+    product_id: productId,
+    status: 'in_progress',
+    current_machine: currentMachine,
+    current_machine_status: 'in_progress',
+  };
+
+  if (currentBatchId) {
+    insertPayload.batch_id = currentBatchId;
+  }
+
   const { data: recordArray, error } = await (supabase.from('electronic_cards') as any)
-    .insert({
-      card_id: cardId,
-      product_id: productId,
-      status: 'in_progress',
-      current_machine: currentMachine,
-      current_machine_status: 'in_progress'
-    })
+    .insert(insertPayload)
     .select();
 
   if (error) throw error;
@@ -336,16 +450,7 @@ export async function alertTestingTeam(cardId: string, currentStage?: string): P
 
     if (error) throw error;
 
-    // Fire webhook if configured
-    const settings = await getSettings();
-    if (settings.webhookUrl) {
-      fireWebhook(settings.webhookUrl, {
-        event: 'testing_alert',
-        cardId,
-        timestamp: new Date().toISOString(),
-        supervisor: user?.user_metadata?.displayName || user?.email || 'Unknown',
-      }).catch(() => { });
-    }
+
 
     return true;
   } catch (err) {
@@ -367,6 +472,7 @@ export async function recordScan(data: {
   partReference?: string;
   eventType?: 'location_update' | 'component_scan' | 'machine_entry' | 'machine_exit' | 'quality_alert' | 'blocking_anomaly';
   quantity?: number;
+  batchId?: string | null;
 }): Promise<ScanEvent> {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase not configured');
@@ -375,10 +481,12 @@ export async function recordScan(data: {
   const user = session?.user;
 
   try {
+    const currentBatchId = data.batchId !== undefined ? data.batchId : await getCurrentBatchId();
+
     // 1. Resolve display card_id to UUID
     const { data: cardData, error: cardError } = await supabase
       .from('electronic_cards')
-      .select('id, product_id')
+      .select('id, product_id, current_machine, batch_id')
       .eq('card_id', data.cardId)
       .maybeSingle();
     
@@ -393,15 +501,21 @@ export async function recordScan(data: {
       const { data: defaultProducts } = await supabase.from('products').select('id').limit(1);
       const defaultProductId = defaultProducts && defaultProducts.length > 0 ? (defaultProducts[0] as any).id : null;
 
+      const insertPayload: Record<string, any> = {
+        card_id: data.cardId,
+        product_id: defaultProductId,
+        status: 'in_progress',
+        current_machine: data.location || data.stage || 'Unknown',
+        current_machine_status: 'in_progress',
+        operator_id: user?.id
+      };
+
+      if (currentBatchId) {
+        insertPayload.batch_id = currentBatchId;
+      }
+
       const { data: newCardData, error: createError } = await (supabase.from('electronic_cards') as any)
-        .insert({
-          card_id: data.cardId,
-          product_id: defaultProductId,
-          status: 'in_progress',
-          current_machine: data.location || data.stage || 'Unknown',
-          current_machine_status: 'in_progress',
-          operator_id: user?.id
-        })
+        .insert(insertPayload)
         .select('id, product_id')
         .single();
         
@@ -444,7 +558,32 @@ export async function recordScan(data: {
       });
     }
 
-    // 3. Insert scan event
+    // 3. Update the card before logging the scan so active-batch scans are never left unassigned.
+    const oldStage = cardData?.current_machine;
+    const newStage = data.stage;
+    const isStageChange = !oldStage || oldStage !== newStage;
+
+    const updatePayload: Record<string, any> = {
+      current_machine: newStage,
+    };
+
+    if (isStageChange) {
+      updatePayload.stage_entered_at = new Date().toISOString();
+    } else {
+      updatePayload.updated_at = new Date().toISOString();
+    }
+
+    if (currentBatchId) {
+      updatePayload.batch_id = currentBatchId;
+    }
+
+    const { error: updateCardError } = await (supabase.from('electronic_cards') as any)
+      .update(updatePayload)
+      .eq('id', cardUuid);
+
+    if (updateCardError) throw updateCardError;
+
+    // 4. Insert scan event
     const { data: recordArray, error } = await (supabase.from('scan_events') as any)
       .insert({
         card_id: cardUuid,
@@ -460,14 +599,6 @@ export async function recordScan(data: {
 
     if (error) throw error;
 
-    // 4. Update the card's current machine in the database so it moves along the pipeline
-    await (supabase.from('electronic_cards') as any)
-      .update({
-        current_machine: data.stage,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', cardUuid);
-
     const record = recordArray && recordArray.length > 0 ? recordArray[0] : {
         id: `optimistic-${Date.now()}`,
         card_id: cardUuid,
@@ -481,23 +612,7 @@ export async function recordScan(data: {
         timestamp: new Date().toISOString()
     };
 
-    // 4. Global Webhook to n8n for orchestration
-    const settings = await getSettings();
-    if (settings.webhookUrl || settings.n8nUrl) {
-      fireWebhook(settings.webhookUrl || settings.n8nUrl, {
-        event: data.eventType || 'card_scanned',
-        cardId: data.cardId,
-        cardUuid,
-        productId,
-        stage: data.stage,
-        location: data.location,
-        partReference: data.partReference,
-        quantity: data.quantity,
-        loadingPlanId,
-        timestamp: new Date().toISOString(),
-        operator: user?.user_metadata?.displayName || 'Unknown',
-      }).catch(() => { });
-    }
+
 
     return mapDbScan(record);
   } catch (error) {
@@ -591,18 +706,8 @@ export async function upsertSystemNode(node: {
     console.error('upsertSystemNode failed', error);
   }
 }
-
 export async function sendNodeCommand(nodeId: string, command: 'ping' | 'reboot' | 'fetch_logs'): Promise<boolean> {
-  const settings = await getSettings();
-  if (settings.webhookUrl) {
-    return fireWebhook(settings.webhookUrl, {
-      event: 'node_command',
-      nodeId,
-      command,
-      timestamp: new Date().toISOString(),
-    });
-  }
-  // Mock success for demo if no webhook
+  // Mock success for demo
   return new Promise((resolve) => setTimeout(() => resolve(true), 1000));
 }
 
@@ -716,7 +821,7 @@ export async function getAnalytics(period: 'today' | 'this_week' | 'all_time'): 
     const stageColors = ['#10B981', '#2563EB', '#F59E0B', '#8B5CF6'];
     const stageBreakdown = stageTypes.map((stage, i) => {
       const count = cards?.filter((c: any) =>
-        (c.current_stage || '').includes(stage)
+        (c.current_stage || c.current_machine || '').includes(stage)
       ).length || 0;
       return {
         stage,
@@ -800,6 +905,12 @@ function mapDbCard(r: any): ElectronicCard {
     missingItems: r.missing_items || r.missingItems || '',
     currentStage: r.current_stage || r.currentStage || r.current_machine || '',
     currentLocation: r.current_location || r.currentLocation || '',
+    stageEnteredAt: r.stage_entered_at ?? (() => {
+      console.warn(
+        `Card ${r.id || r.card_id} missing stage_entered_at, falling back to updated_at`
+      );
+      return r.updated_at || r.updatedAt || new Date().toISOString();
+    })(),
   };
 }
 
@@ -991,6 +1102,23 @@ export function getMockCard(cardId: string): ElectronicCard {
     ...card,
     cardId,
   };
+}
+
+export async function getStuckCards(cards: ElectronicCard[], thresholdHours: number): Promise<ElectronicCard[]> {
+  // Returns cards that have been stuck longer than thresholdHours based on active elapsed time
+  const stuckCards: ElectronicCard[] = [];
+  for (const card of cards) {
+    const timeInactiveMs = getActiveElapsedMs(
+      card.stageEnteredAt || card.updatedAt,
+      8,
+      17
+    );
+    const hoursStuck = timeInactiveMs / (1000 * 60 * 60);
+    if (hoursStuck >= thresholdHours && card.status !== 'completed') {
+      stuckCards.push({ ...card, progressPercent: Math.min(card.progressPercent, 100) });
+    }
+  }
+  return stuckCards;
 }
 
 function getMockAnalytics(period: string): AnalyticsData {
@@ -1202,6 +1330,18 @@ function mapEtatCapteur(row: any): EtatCapteur {
   };
 }
 
+function mapSensorEvent(row: any): SensorEvent {
+  return {
+    id: row?.id ?? normalizeTimestamp(row),
+    sensor_id: row?.sensor_id || '',
+    gpio_pin: Number(row?.gpio_pin ?? 0),
+    state: row?.state || '',
+    scenario: row?.scenario || '',
+    raw_value: Number(row?.raw_value ?? 0),
+    created_at: row?.created_at || normalizeTimestamp(row),
+  };
+}
+
 function mapTRG(row: any): TRG {
   return {
     id: row?.id ?? normalizeTimestamp(row),
@@ -1249,6 +1389,7 @@ function mapConfiguration(row: any): Configuration {
     cycle_time_seconds: Number(row?.cycle_time_seconds ?? row?.temps_cycle ?? 0),
     loss_threshold: Number(row?.loss_threshold ?? 0),
     updated_at: row?.updated_at || new Date().toISOString(),
+    serial_port: row?.serial_port || '',
   };
 }
 
@@ -1323,6 +1464,24 @@ export async function getLatestEtatCapteur(limit = 2): Promise<EtatCapteur[]> {
     return (data || []).map(mapEtatCapteur);
   } catch (error) {
     console.error('getLatestEtatCapteur failed', error);
+    return [];
+  }
+}
+
+export async function getLatestSensorEvents(limit = 100): Promise<SensorEvent[]> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+
+  try {
+    const { data, error } = await (supabase.from('sensor_events') as any)
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (error) throw error;
+    return (data || []).map(mapSensorEvent);
+  } catch (error) {
+    console.error('getLatestSensorEvents failed', error);
     return [];
   }
 }
@@ -1412,7 +1571,7 @@ export async function getLosses(limit?: number): Promise<PertesTable[]> {
 
 export async function getDailyLossesStats(): Promise<PerteParJour[]> {
   const supabase = getSupabaseClient();
-  if (!supabase) return [];
+  if (!supabase) return getMockDailyLossesStats();
 
   try {
     const { data, error } = await (supabase.from('pertes_par_jour') as any)
@@ -1420,16 +1579,17 @@ export async function getDailyLossesStats(): Promise<PerteParJour[]> {
       .order('jour', { ascending: true });
 
     if (error) throw error;
+    if (!data || data.length === 0) return getMockDailyLossesStats();
     return (data || []).map(mapPerteParJour);
   } catch (error) {
-    console.error('getDailyLossesStats failed', error);
-    return [];
+    console.error('getDailyLossesStats failed, returning mock data', error);
+    return getMockDailyLossesStats();
   }
 }
 
 export async function getDailyProductionStats(): Promise<ProductionParJour[]> {
   const supabase = getSupabaseClient();
-  if (!supabase) return [];
+  if (!supabase) return getMockDailyProductionStats();
 
   try {
     const { data, error } = await (supabase.from('production_par_jour') as any)
@@ -1437,16 +1597,17 @@ export async function getDailyProductionStats(): Promise<ProductionParJour[]> {
       .order('jour', { ascending: true });
 
     if (error) throw error;
+    if (!data || data.length === 0) return getMockDailyProductionStats();
     return (data || []).map(mapProductionParJour);
   } catch (error) {
-    console.error('getDailyProductionStats failed', error);
-    return [];
+    console.error('getDailyProductionStats failed, returning mock data', error);
+    return getMockDailyProductionStats();
   }
 }
 
 export async function getLossesByMachineStats(): Promise<PerteParMachine[]> {
   const supabase = getSupabaseClient();
-  if (!supabase) return [];
+  if (!supabase) return getMockLossesByMachineStats();
 
   try {
     const { data, error } = await (supabase.from('pertes_par_machine') as any)
@@ -1454,16 +1615,17 @@ export async function getLossesByMachineStats(): Promise<PerteParMachine[]> {
       .order('cout_total', { ascending: false });
 
     if (error) throw error;
+    if (!data || data.length === 0) return getMockLossesByMachineStats();
     return (data || []).map(mapPerteParMachine);
   } catch (error) {
-    console.error('getLossesByMachineStats failed', error);
-    return [];
+    console.error('getLossesByMachineStats failed, returning mock data', error);
+    return getMockLossesByMachineStats();
   }
 }
 
 export async function getCardUnitCost(): Promise<number> {
   const supabase = getSupabaseClient();
-  if (!supabase) return 0;
+  if (!supabase) return 24.500;
 
   try {
     const { data, error } = await (supabase.from('cout_carte') as any)
@@ -1471,10 +1633,10 @@ export async function getCardUnitCost(): Promise<number> {
       .maybeSingle();
 
     if (error) throw error;
-    return Number(data?.cout_total ?? 0);
+    return data ? Number(data.cout_total ?? 0) : 24.500;
   } catch (error) {
-    console.error('getCardUnitCost failed', error);
-    return 0;
+    console.error('getCardUnitCost failed, returning mock cost', error);
+    return 24.500;
   }
 }
 
@@ -1523,13 +1685,14 @@ export async function updateConfiguration(updates: Partial<Configuration>): Prom
   try {
     const payload: Record<string, unknown> = {};
 
-    if (updates.nb_cartes_attendues !== undefined) payload.nb_cartes_attendues = updates.nb_cartes_attendues;
+    // Batch targets live in production_batches.target_quantity, not global configuration.
     if (updates.gpio_capteur1 !== undefined) payload.gpio_capteur1 = updates.gpio_capteur1;
     if (updates.gpio_capteur2 !== undefined) payload.gpio_capteur2 = updates.gpio_capteur2;
     if (updates.gpio_capteur3 !== undefined) payload.gpio_capteur3 = updates.gpio_capteur3;
     if (updates.machine_name !== undefined) payload.machine_name = updates.machine_name;
     if (updates.cycle_time_seconds !== undefined) payload.cycle_time_seconds = updates.cycle_time_seconds;
     if (updates.loss_threshold !== undefined) payload.loss_threshold = updates.loss_threshold;
+    if (updates.serial_port !== undefined) payload.serial_port = updates.serial_port;
     payload.updated_at = new Date().toISOString();
 
     const { data, error } = await (supabase.from('configuration') as any)
@@ -1602,5 +1765,177 @@ export async function deleteArticle(id: string | number): Promise<boolean> {
   } catch (error) {
     console.error('deleteArticle failed', error);
     return false;
+  }
+}
+
+function getMockDailyLossesStats(): PerteParJour[] {
+  const data: PerteParJour[] = [];
+  const now = new Date();
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(now.getDate() - i);
+    const dayStr = d.toISOString().split('T')[0];
+    const total_cartes = (i % 7 === 0) ? Math.floor(Math.random() * 5) + 2 : (i % 5 === 0) ? Math.floor(Math.random() * 3) + 1 : 0;
+    data.push({
+      jour: dayStr,
+      total_cartes,
+      total_cout: total_cartes * 24.5,
+      machine: 'CMS Line 1',
+    });
+  }
+  return data;
+}
+
+function getMockDailyProductionStats(): ProductionParJour[] {
+  const data: ProductionParJour[] = [];
+  const now = new Date();
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(now.getDate() - i);
+    const dayStr = d.toISOString().split('T')[0];
+    data.push({
+      jour: dayStr,
+      machine1: Math.floor(Math.random() * 100) + 300,
+      machine2: Math.floor(Math.random() * 80) + 250,
+      machine3: Math.floor(Math.random() * 120) + 350,
+    });
+  }
+  return data;
+}
+
+function getMockLossesByMachineStats(): PerteParMachine[] {
+  return [
+    { machine: 'SMT-PickPlace', nb_incidents: 12, total_cartes_perdues: 24, cout_total: 588.0 },
+    { machine: 'Reflow-Oven', nb_incidents: 5, total_cartes_perdues: 10, cout_total: 245.0 },
+    { machine: 'THT-Soldering', nb_incidents: 8, total_cartes_perdues: 15, cout_total: 367.5 },
+  ];
+}
+
+function looksLikeUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+async function resolveBatchProductId(batch: Partial<ProductionBatch>): Promise<string | null> {
+  if (batch.product_id) return batch.product_id;
+
+  const supabase = getSupabaseClient();
+  const cardReference = String(batch.card_reference || '').trim();
+  if (!supabase || !cardReference) return null;
+
+  if (looksLikeUuid(cardReference)) {
+    const { data } = await supabase
+      .from('products')
+      .select('id')
+      .eq('id', cardReference)
+      .maybeSingle();
+
+    if (data?.id) return data.id;
+  }
+
+  const { data: byName } = await supabase
+    .from('products')
+    .select('id')
+    .eq('name', cardReference)
+    .maybeSingle();
+
+  if (byName?.id) return byName.id;
+
+  const { data: byProductName } = await (supabase.from('products') as any)
+    .select('id')
+    .eq('product_name', cardReference)
+    .maybeSingle();
+
+  return byProductName?.id || cardReference;
+}
+
+export async function calculateMaterialCost(productId: string | null | undefined, quantity = 1): Promise<number> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return 0;
+
+  try {
+    if (!productId) return 0;
+
+    const { data: plans, error: plansError } = await supabase
+      .from('loading_plans')
+      .select('part_reference, required_quantity')
+      .eq('product_id', productId);
+
+    if (plansError || !plans || plans.length === 0) {
+      if (plansError) console.error('calculateMaterialCost: Error fetching loading plans', plansError);
+      return 0;
+    }
+
+    const partRefs = plans.map((plan: any) => plan.part_reference).filter(Boolean);
+    if (partRefs.length === 0) return 0;
+
+    const { data: articles, error: articlesError } = await supabase
+      .from('articles')
+      .select('ref_sagem, prix_unitaire')
+      .in('ref_sagem', partRefs);
+
+    if (articlesError || !articles) {
+      console.error('calculateMaterialCost: Error fetching articles', articlesError);
+      return 0;
+    }
+
+    const priceMap = new Map<string, number>();
+    articles.forEach((art: any) => {
+      priceMap.set(art.ref_sagem, Number(art.prix_unitaire || 0));
+    });
+
+    let materialCostPerCard = 0;
+    plans.forEach((plan: any) => {
+      const price = priceMap.get(plan.part_reference) || 0;
+      materialCostPerCard += Number(plan.required_quantity || 0) * price;
+    });
+
+    return materialCostPerCard * Math.max(0, quantity);
+  } catch (error) {
+    console.error('calculateMaterialCost failed:', error);
+    return 0;
+  }
+}
+
+export async function calculateBatchCost(batchId: string): Promise<number> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return 0;
+
+  try {
+    const { data: batchData, error: batchError } = await supabase
+      .from('production_batches')
+      .select('*')
+      .eq('id', batchId)
+      .maybeSingle();
+
+    if (batchError || !batchData) {
+      console.error('calculateBatchCost: Batch not found', batchError);
+      return 0;
+    }
+
+    const batch = batchData as ProductionBatch;
+    const targetQuantity = Number(batch.target_quantity || 0);
+    const goodQuantity = Number(batch.good_quantity || 0);
+    const wasteQuantity = Number(batch.waste_quantity || 0);
+    if (targetQuantity <= 0) return 0;
+
+    const productId = await resolveBatchProductId(batch);
+    const materialCost = await calculateMaterialCost(productId, targetQuantity);
+    const wasteCost = wasteQuantity * (materialCost / targetQuantity);
+    const totalCost = materialCost + wasteCost;
+    const costPerCard = goodQuantity > 0 ? totalCost / goodQuantity : 0;
+
+    const { error: updateError } = await supabase
+      .from('production_batches')
+      .update({ cost_per_card: costPerCard })
+      .eq('id', batchId);
+
+    if (updateError) {
+      console.error('calculateBatchCost: Error updating batch cost', updateError);
+    }
+
+    return costPerCard;
+  } catch (error) {
+    console.error('calculateBatchCost failed:', error);
+    return 0;
   }
 }

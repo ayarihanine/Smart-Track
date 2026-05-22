@@ -7,6 +7,7 @@ interface PendingScan {
     cardId: string;
     location: string;
     stage: string;
+    batchId?: string | null;
     timestamp: number;
 }
 
@@ -44,6 +45,7 @@ export const useOfflineStore = create<OfflineStore>()(
                             cardId: scan.cardId,
                             location: scan.location,
                             stage: scan.stage,
+                            batchId: scan.batchId,
                         });
                         // Remove from the list if successful
                         const idx = remaining.indexOf(scan);

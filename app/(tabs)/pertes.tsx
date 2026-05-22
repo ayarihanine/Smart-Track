@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import {
   FlatList,
   RefreshControl,
@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useQuery } from '@tanstack/react-query';
+import { useFocusEffect } from 'expo-router';
 
 import { borderRadius, shadows, spacing, typography } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
@@ -19,6 +19,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { getLosses } from '@/lib/api';
 import { PertesTable } from '@/types/production';
+import { getSupabaseClient } from '@/lib/supabase';
+import { useAlertsStore } from '@/store/alertsStore';
 
 type LossesFilter = 'today' | 'week' | 'month';
 
@@ -150,17 +152,100 @@ function LossCard({
 export default function LossesScreen() {
   const { t, language } = useTranslation();
   const { palette, isDark } = useTheme();
-  const [filter, setFilter] = useState<LossesFilter>('today');
+  const { addAlert } = useAlertsStore();
 
-  const lossesQuery = useQuery({
-    queryKey: ['production', 'losses'],
-    queryFn: () => getLosses(),
-  });
+  const [filter, setFilter] = useState<LossesFilter>('today');
+  const [losses, setLosses] = useState<PertesTable[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Active batch and quality threshold state
+  const [activeBatch, setActiveBatch] = useState<any>(null);
+  const [lossThreshold, setLossThreshold] = useState<number>(0.05); // default 5%
+
+  const fetchLosses = async () => {
+    try {
+      const data = await getLosses();
+      setLosses(data || []);
+    } catch (error) {
+      console.error('fetchLosses failed:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const loadBatchAndConfig = async () => {
+    try {
+      const supabase = getSupabaseClient();
+      if (!supabase) return;
+
+      // 1. Fetch active batch
+      const { data: activeBatchData } = await supabase
+        .from('production_batches')
+        .select('*')
+        .eq('status', 'active')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      setActiveBatch(activeBatchData);
+
+      // 2. Fetch loss_threshold from configuration
+      const { data: config } = await supabase
+        .from('configuration')
+        .select('loss_threshold')
+        .limit(1)
+        .maybeSingle();
+
+      if (config) {
+        setLossThreshold(Number(config.loss_threshold || 0.05));
+      }
+    } catch (err) {
+      console.error('loadBatchAndConfig failed:', err);
+    }
+  };
+
+  useFocusEffect(
+    useCallback(() => {
+      loadBatchAndConfig();
+      fetchLosses();
+    }, [])
+  );
+
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    const channel = supabase
+      .channel('pertes-screen-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pertes_table' },
+        () => {
+          fetchLosses();
+          loadBatchAndConfig();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   const filteredLosses = useMemo(() => {
+    if (activeBatch) {
+      const start = new Date(activeBatch.start_time).getTime();
+      const end = activeBatch.end_time ? new Date(activeBatch.end_time).getTime() : Date.now();
+
+      return losses.filter((item) => {
+        const tVal = new Date(item.date_temps).getTime();
+        return tVal >= start && tVal <= end;
+      });
+    }
+
     const start = getFilterStart(filter);
-    return (lossesQuery.data || []).filter((item) => new Date(item.date_temps) >= start);
-  }, [filter, lossesQuery.data]);
+    return losses.filter((item) => new Date(item.date_temps) >= start);
+  }, [activeBatch, filter, losses]);
 
   const totals = useMemo(
     () =>
@@ -174,45 +259,106 @@ export default function LossesScreen() {
     [filteredLosses]
   );
 
+  const normalizedLossThreshold = useMemo(
+    () => (lossThreshold > 1 ? lossThreshold / 100 : lossThreshold),
+    [lossThreshold]
+  );
+
+  const producedQuantity = useMemo(() => {
+    if (!activeBatch) return 0;
+
+    const produced = Number(activeBatch.produced_quantity || 0);
+    if (produced > 0) return produced;
+
+    const goodQty = Number(activeBatch.good_quantity || 0);
+    return goodQty + totals.cards;
+  }, [activeBatch, totals.cards]);
+
+  const wastePercentage = useMemo(() => {
+    const wasteQty = totals.cards;
+    if (producedQuantity <= 0) return 0;
+    return wasteQty / producedQuantity;
+  }, [producedQuantity, totals.cards]);
+
+  // Critical Safeguard Alert triggers
+  useEffect(() => {
+    if (activeBatch && normalizedLossThreshold > 0 && wastePercentage > normalizedLossThreshold) {
+      const alertId = `loss-threshold-exceeded-${activeBatch.id}`;
+      addAlert({
+        id: alertId,
+        type: 'quality_alert',
+        severity: 'critical',
+        message: `Quality Alert: Waste rate (${(wastePercentage * 100).toFixed(1)}%) in batch ${activeBatch.batch_number} exceeds threshold limit of ${(normalizedLossThreshold * 100).toFixed(1)}%!`,
+      });
+    }
+  }, [activeBatch, normalizedLossThreshold, wastePercentage, addAlert]);
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
       {/* Theme Adaptive Hero Header */}
-      <Animated.View entering={FadeInUp.duration(600).springify()} style={[styles.heroBanner, { shadowColor: isDark ? '#EF4444' : palette.border, borderBottomColor: palette.border, borderBottomWidth: 1 }]}>
-        <LinearGradient
-          colors={isDark ? ['#0F172A', '#1E293B'] : [palette.background, palette.backgroundSecondary]}
-          style={StyleSheet.absoluteFill}
-          start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
-        />
-        <View style={[styles.heroOrb, { opacity: isDark ? 0.1 : 0.05 }]} />
-        
+      <Animated.View entering={FadeInUp.duration(600).springify()} style={[styles.heroBanner, { backgroundColor: palette.background, shadowColor: isDark ? '#EF4444' : palette.border, borderBottomColor: palette.border, borderBottomWidth: 1 }]}>
         <SafeAreaView edges={['top']} style={styles.heroSafeArea}>
           <View style={styles.heroContent}>
             <View style={styles.heroTitleRow}>
-              <Text style={[styles.heroTitle, { color: palette.text }]}>{t('lossesHistory')}</Text>
+              <View>
+                <Text style={[styles.heroTitle, { color: palette.text }]}>
+                  {activeBatch ? 'Batch scrap rate' : t('lossesHistory')}
+                </Text>
+                {activeBatch && (
+                  <Text style={[styles.activeBatchBadgeText, { color: palette.textSecondary }]}>
+                    Batch: {activeBatch.batch_number} ({activeBatch.card_reference})
+                  </Text>
+                )}
+              </View>
               <View style={[styles.heroBadge, { backgroundColor: isDark ? 'rgba(239, 68, 68, 0.15)' : 'rgba(239, 68, 68, 0.1)', borderColor: isDark ? 'rgba(239, 68, 68, 0.3)' : 'rgba(239, 68, 68, 0.2)' }]}>
                 <Ionicons name="trending-down" size={14} color={ERROR_COLOR} />
-                <Text style={[styles.heroBadgeText, { color: ERROR_COLOR }]}>{totals.cards} total</Text>
+                <Text style={[styles.heroBadgeText, { color: ERROR_COLOR }]}>{totals.cards} lost</Text>
               </View>
             </View>
             
             <View style={styles.heroStatsRow}>
               <View style={styles.heroStatItem}>
-                <Text style={[styles.heroStatLabel, { color: palette.textSecondary }]}>{t('totalFinancialCost')}</Text>
+                <Text style={[styles.heroStatLabel, { color: palette.textSecondary }]}>
+                  {activeBatch ? 'Waste quantity' : t('totalFinancialCost')}
+                </Text>
                 <View style={styles.heroStatValueRow}>
-                  <Text style={[styles.heroStatValue, { color: ERROR_COLOR }]}>{totals.cost.toFixed(3)}</Text>
-                  <Text style={[styles.heroStatCurrency, { color: ERROR_COLOR }]}>TND</Text>
+                  <Text style={[styles.heroStatValue, { color: palette.text }]}>
+                    {activeBatch ? totals.cards : totals.cost.toFixed(3)}
+                  </Text>
+                  <Text style={[styles.heroStatCurrency, { color: ERROR_COLOR }]}>
+                    {activeBatch ? 'cards' : 'TND'}
+                  </Text>
                 </View>
               </View>
+
+              {activeBatch && (
+                <View style={[styles.heroStatItem, { alignItems: 'flex-end' }]}>
+                  <Text style={[styles.heroStatLabel, { color: palette.textSecondary }]}>Scrap rate</Text>
+                  <View style={styles.heroStatValueRow}>
+                    <Text style={[
+                      styles.heroStatValue, 
+                      { color: wastePercentage > normalizedLossThreshold ? ERROR_COLOR : SUCCESS_COLOR }
+                    ]}>
+                      {(wastePercentage * 100).toFixed(1)}%
+                    </Text>
+                  </View>
+                  <Text style={[styles.thresholdLabel, { color: palette.textTertiary }]}>
+                    Produced: {producedQuantity} | Limit: {(normalizedLossThreshold * 100).toFixed(0)}%
+                  </Text>
+                </View>
+              )}
             </View>
           </View>
           
-          <View style={styles.segmentedControlWrap}>
-            <View style={[styles.segmentedControl, { backgroundColor: isDark ? '#334155' : palette.background, borderColor: palette.border, borderWidth: 1 }]}>
-              <FilterChip active={filter === 'today'} label={t('filterToday')} onPress={() => setFilter('today')} palette={palette} />
-              <FilterChip active={filter === 'week'} label={t('filterThisWeek')} onPress={() => setFilter('week')} palette={palette} />
-              <FilterChip active={filter === 'month'} label={t('filterThisMonth')} onPress={() => setFilter('month')} palette={palette} />
+          {!activeBatch && (
+            <View style={styles.segmentedControlWrap}>
+              <View style={[styles.segmentedControl, { backgroundColor: isDark ? '#334155' : palette.background, borderColor: palette.border, borderWidth: 1 }]}>
+                <FilterChip active={filter === 'today'} label={t('filterToday')} onPress={() => setFilter('today')} palette={palette} />
+                <FilterChip active={filter === 'week'} label={t('filterThisWeek')} onPress={() => setFilter('week')} palette={palette} />
+                <FilterChip active={filter === 'month'} label={t('filterThisMonth')} onPress={() => setFilter('month')} palette={palette} />
+              </View>
             </View>
-          </View>
+          )}
         </SafeAreaView>
       </Animated.View>
 
@@ -223,10 +369,10 @@ export default function LossesScreen() {
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
         refreshControl={
-          <RefreshControl refreshing={lossesQuery.isFetching} onRefresh={lossesQuery.refetch} tintColor={palette.primary} />
+          <RefreshControl refreshing={isLoading} onRefresh={fetchLosses} tintColor={palette.primary} />
         }
         ListEmptyComponent={
-          lossesQuery.isLoading ? null : (
+          isLoading ? null : (
             <View style={styles.emptyState}>
               <Ionicons name="checkmark-circle" size={56} color={SUCCESS_COLOR} />
               <Text style={[styles.emptyTitle, { color: palette.text }]}>{t('noLossesDetected')}</Text>
@@ -255,17 +401,7 @@ const styles = StyleSheet.create({
     elevation: 8,
     marginBottom: spacing.md,
   },
-  heroOrb: {
-    position: 'absolute',
-    top: -50,
-    right: -50,
-    width: 200,
-    height: 200,
-    borderRadius: 100,
-    backgroundColor: '#EF4444',
-    opacity: 0.1,
-    transform: [{ scale: 1.5 }],
-  },
+
   heroSafeArea: {
     // container inside the banner
   },
@@ -283,7 +419,6 @@ const styles = StyleSheet.create({
   heroTitle: {
     ...typography.h2,
     fontWeight: '900',
-    color: '#FFFFFF',
     letterSpacing: -0.5,
   },
   heroBadge: {
@@ -322,7 +457,6 @@ const styles = StyleSheet.create({
     ...typography.h1,
     fontWeight: '900',
     fontSize: 40,
-    color: '#FFFFFF',
   },
   heroStatCurrency: {
     ...typography.h3,
@@ -485,5 +619,14 @@ const styles = StyleSheet.create({
   emptySubtitle: {
     ...typography.body,
     textAlign: 'center',
+  },
+  activeBatchBadgeText: {
+    ...typography.tiny,
+    marginTop: 4,
+  },
+  thresholdLabel: {
+    ...typography.tiny,
+    fontWeight: '700',
+    marginTop: 2,
   },
 });

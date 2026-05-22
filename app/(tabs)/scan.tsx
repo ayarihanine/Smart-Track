@@ -7,7 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
-import { recordScan, getCard } from '@/lib/api';
+import { recordScan, getCard, getCurrentBatchId } from '@/lib/api';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
 import { useOfflineStore } from '@/store/offlineStore';
@@ -18,6 +18,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 const QUICK_IDS = ['CARD00001', 'CARD00002', 'CARD99887', 'CARD55443', 'CARD12345'];
 
 type ScanMode = 'camera' | 'manual';
+type QueuedBatchScan = { cardId: string; stage: string; productName?: string; batchId?: string | null };
 
 export default function ScanScreen() {
   const { t } = useTranslation();
@@ -30,7 +31,7 @@ export default function ScanScreen() {
   const [scannedCard, setScannedCard] = useState<{ cardId: string; stage: string; productName?: string } | null>(null);
 
   const [isBatchMode, setIsBatchMode] = useState(false);
-  const [batchQueue, setBatchQueue] = useState<{ cardId: string; stage: string; productName?: string }[]>([]);
+  const [batchQueue, setBatchQueue] = useState<QueuedBatchScan[]>([]);
 
   const addPendingScan = useOfflineStore(s => s.addPendingScan);
   const offlineModeEnabled = useSettingsStore(s => s.offlineModeEnabled);
@@ -61,9 +62,10 @@ export default function ScanScreen() {
       // 1. Try to find in real database
       const card = await getCard(id);
       const stage = card?.currentMachine || 'Stage 1: Assembly';
+      const batchId = await getCurrentBatchId();
 
       if (isBatchMode) {
-        setBatchQueue(prev => [...prev, { cardId: id, stage, productName: card?.productName }]);
+        setBatchQueue(prev => [...prev, { cardId: id, stage, productName: card?.productName, batchId }]);
         setCardInput('');
       } else {
         // 2. Record the scan immediately if not in batch mode
@@ -72,6 +74,7 @@ export default function ScanScreen() {
             cardId: id,
             location: source,
             stage: stage,
+            batchId,
           });
         } catch (err: any) {
           if (err?.code === 'CARD_NOT_FOUND' || err?.message?.includes('Card not found')) {
@@ -86,6 +89,7 @@ export default function ScanScreen() {
               cardId: id,
               location: source,
               stage: stage,
+              batchId,
             });
           } else {
             Alert.alert(t('scanFailed'), t('connectionErrorNoQueue'));
@@ -144,6 +148,7 @@ export default function ScanScreen() {
           cardId: item.cardId,
           location: 'Batch Mode',
           stage: item.stage,
+          batchId: item.batchId,
         });
         successCount++;
       } catch (err: any) {
@@ -152,6 +157,7 @@ export default function ScanScreen() {
               cardId: item.cardId,
               location: 'Batch Mode',
               stage: item.stage,
+              batchId: item.batchId,
             });
             successCount++; // counts as queued offline
          }

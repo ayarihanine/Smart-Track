@@ -148,10 +148,23 @@ export default function HomeScreen() {
   const unreadAlertsCount = alerts.filter(a => !a.dismissed).length;
   const stuckThreshold = useSettingsStore(s => s.stuckCardThresholdHours);
 
-  const { data: cards, isLoading: cardsLoading, refetch } = useQuery({
-    queryKey: ['cards'],
-    queryFn: () => getCards(),
-  });
+  const [cards, setCards] = useState<ElectronicCard[]>([]);
+  const [cardsLoading, setCardsLoading] = useState(true);
+
+  const fetchCards = async () => {
+    try {
+      const data = await getCards();
+      setCards(data || []);
+    } catch (error) {
+      console.error('fetchCards failed:', error);
+    } finally {
+      setCardsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchCards();
+  }, []);
 
   useQuery({
     queryKey: ['analytics', 'today'],
@@ -173,7 +186,7 @@ export default function HomeScreen() {
           table: 'electronic_cards',
         },
         () => {
-          refetch();
+          fetchCards();
         }
       )
       .subscribe();
@@ -181,7 +194,7 @@ export default function HomeScreen() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [refetch]);
+  }, []);
 
   const completedCount = cards?.filter(c => c.status === 'completed').length || 0;
   const inProgressCount = cards?.filter(c => c.status === 'in_progress').length || 0;
@@ -197,7 +210,8 @@ export default function HomeScreen() {
           updatedAt: c.updatedAt,
           status: c.status,
           currentStage: c.currentStage,
-          currentLocation: c.currentLocation
+          currentLocation: c.currentLocation,
+          stageEnteredAt: c.stageEnteredAt
         })),
         stuckThreshold
       );
@@ -233,7 +247,7 @@ export default function HomeScreen() {
           onPress: async () => {
             const success = await deleteCard(cardId);
             if (success) {
-              refetch();
+              fetchCards();
             } else {
               Alert.alert(t('error'), t('deleteFailed'));
             }
@@ -250,7 +264,7 @@ export default function HomeScreen() {
         showsVerticalScrollIndicator={false}
         onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
         scrollEventThrottle={16}
-        refreshControl={<RefreshControl refreshing={cardsLoading} onRefresh={refetch} tintColor={palette.primary} />}
+        refreshControl={<RefreshControl refreshing={cardsLoading} onRefresh={fetchCards} tintColor={palette.primary} />}
       >
         {/* Header */}
         <Animated.View style={[styles.header, { opacity: headerOpacity }]}>
@@ -356,6 +370,19 @@ export default function HomeScreen() {
                   </LinearGradient>
                 </AnimatedIcon>
                 <Text style={[styles.actionLabel, { color: palette.textSecondary }]} numberOfLines={2} adjustsFontSizeToFit>{t('activity')}</Text>
+              </TouchableOpacity>
+            )}
+            {(user?.role === 'supervisor' || user?.role === 'admin') && (
+              <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/stuck-cards' as any)} activeOpacity={0.8}>
+                <AnimatedIcon index={2}>
+                  <LinearGradient
+                    colors={isDark ? ['#7f1d1d', '#450a0a'] : ['#FEE2E2', '#FECACA']}
+                    style={styles.actionIcon}
+                  >
+                    <Ionicons name="warning" size={24} color="#EF4444" />
+                  </LinearGradient>
+                </AnimatedIcon>
+                <Text style={[styles.actionLabel, { color: palette.textSecondary }]} numberOfLines={2} adjustsFontSizeToFit>{t('manageStuckCards') || 'Stuck Cards'}</Text>
               </TouchableOpacity>
             )}
           </View>

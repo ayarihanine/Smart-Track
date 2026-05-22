@@ -135,6 +135,15 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="sensors"
+        options={{
+          title: 'Sensors',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="hardware-chip" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="profile"
         options={{
           title: t('profile'),
@@ -144,7 +153,6 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen name="settings" options={{ href: null }} />
-      <Tabs.Screen name="analytics" options={{ href: null }} />
     </Tabs>
   );
 }
