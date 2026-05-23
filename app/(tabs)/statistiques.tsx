@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { Dimensions, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Dimensions, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BarChart } from 'react-native-chart-kit';
 import Svg, { Line, Rect, Text as SvgText, Defs, LinearGradient as SvgGradient, Stop } from 'react-native-svg';
@@ -7,21 +7,26 @@ import { useQuery } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
+import { router } from 'expo-router';
 
-import { borderRadius, shadows, spacing, typography } from '../../constants/design';
+import { spacing, typography } from '../../constants/design';
 import { useTheme } from '../../components/ThemeProvider';
 import { useTranslation } from '../../hooks/useTranslation';
 import {
+  fetchLossesByDay,
+  fetchLossesByMachine,
+  fetchProductionByDay,
+  fetchTRGHistory,
+  fetchTRSHistory,
   getCardUnitCost,
-  getDailyLossesStats,
-  getDailyProductionStats,
-  getLossesByMachineStats,
 } from '../../lib/api';
 import { PerteParMachine, ProductionParJour, PerteParJour } from '../../types/production';
+import { TRGRow, TRSRow } from '../../types';
 
 const screenWidth = Dimensions.get('window').width;
 const LOSS_COLOR = '#EF4444';
 const SENSOR_COLORS = ['#38BDF8', '#818CF8', '#34D399']; // Modern vibrant colors
+const EMPTY_TEXT = 'No data recorded yet';
 
 function dayLabel(value: string) {
   const date = new Date(value);
@@ -183,17 +188,27 @@ export default function StatisticsScreen() {
 
   const lossesQuery = useQuery<PerteParJour[]>({
     queryKey: ['production', 'stats', 'losses-per-day'],
-    queryFn: getDailyLossesStats,
+    queryFn: fetchLossesByDay,
   });
 
   const productionQuery = useQuery<ProductionParJour[]>({
     queryKey: ['production', 'stats', 'production-per-day'],
-    queryFn: getDailyProductionStats,
+    queryFn: fetchProductionByDay,
   });
 
   const machineQuery = useQuery<PerteParMachine[]>({
     queryKey: ['production', 'stats', 'losses-per-machine'],
-    queryFn: getLossesByMachineStats,
+    queryFn: fetchLossesByMachine,
+  });
+
+  const trgHistoryQuery = useQuery<TRGRow[]>({
+    queryKey: ['production', 'stats', 'trg-history'],
+    queryFn: () => fetchTRGHistory(20),
+  });
+
+  const trsHistoryQuery = useQuery<TRSRow[]>({
+    queryKey: ['production', 'stats', 'trs-history'],
+    queryFn: () => fetchTRSHistory(20),
   });
 
   const costQuery = useQuery<number>({
@@ -204,6 +219,8 @@ export default function StatisticsScreen() {
   const lossesData: PerteParJour[] = useMemo(() => (lossesQuery.data || []).slice(-30), [lossesQuery.data]);
   const productionData: ProductionParJour[] = useMemo(() => (productionQuery.data || []).slice(-30), [productionQuery.data]);
   const machineStats: PerteParMachine[] = machineQuery.data || [];
+  const trgHistory = useMemo(() => [...(trgHistoryQuery.data || [])].reverse(), [trgHistoryQuery.data]);
+  const trsHistory = useMemo(() => [...(trsHistoryQuery.data || [])].reverse(), [trsHistoryQuery.data]);
 
   const lossesChart = useMemo(() => {
     if (lossesData.length === 0) return null;
@@ -215,6 +232,22 @@ export default function StatisticsScreen() {
   }, [lossesData]);
 
   const lossesChartWidth = Math.max(screenWidth - spacing.lg * 4, (lossesChart?.labels.length || 0) * 52);
+  const trgChart = useMemo(() => {
+    if (trgHistory.length === 0) return null;
+    return {
+      labels: trgHistory.map((item) => dayLabel(item.date_temps)),
+      datasets: [{ data: trgHistory.map((item) => Number(item.trg_pourcentage ?? 0)) }],
+    };
+  }, [trgHistory]);
+  const trsChart = useMemo(() => {
+    if (trsHistory.length === 0) return null;
+    return {
+      labels: trsHistory.map((item) => dayLabel(item.date_temps)),
+      datasets: [{ data: trsHistory.map((item) => Number(item.trs_pourcentage ?? 0)) }],
+    };
+  }, [trsHistory]);
+  const trgChartWidth = Math.max(screenWidth - spacing.lg * 4, (trgChart?.labels.length || 0) * 52);
+  const trsChartWidth = Math.max(screenWidth - spacing.lg * 4, (trsChart?.labels.length || 0) * 52);
 
   const chartConfig = {
     backgroundGradientFrom: palette.background,
@@ -244,10 +277,18 @@ export default function StatisticsScreen() {
       {/* Immersive Hero Header */}
       <Animated.View entering={FadeInUp.duration(600).springify()} style={[styles.heroBanner, { backgroundColor: palette.background, shadowColor: isDark ? '#38BDF8' : palette.border, borderBottomColor: palette.border, borderBottomWidth: 1 }]}>
         <SafeAreaView edges={['top']}>
+          <View style={styles.heroTopNav}>
+            <TouchableOpacity style={[styles.heroBackBtn, { borderColor: palette.border }]} onPress={() => router.push('/(tabs)')}>
+              <Ionicons name="arrow-back" size={16} color={palette.text} />
+            </TouchableOpacity>
+            <Text style={[styles.heroNavTitle, { color: palette.text }]}>{t('statisticsTab') || 'Statistics'}</Text>
+            <View style={styles.heroBackBtn} />
+          </View>
           <View style={styles.heroContent}>
             <View style={styles.heroTitleRow}>
               <Text style={[styles.heroTitle, { color: palette.text }]}>{t('statisticsTab') || 'Statistics'}</Text>
             </View>
+            <Text style={[styles.heroSubtitle, { color: palette.textSecondary }]}>Operational KPIs and trend intelligence</Text>
           </View>
         </SafeAreaView>
       </Animated.View>
@@ -260,6 +301,8 @@ export default function StatisticsScreen() {
               lossesQuery.isFetching ||
               productionQuery.isFetching ||
               machineQuery.isFetching ||
+              trgHistoryQuery.isFetching ||
+              trsHistoryQuery.isFetching ||
               costQuery.isFetching
             }
             onRefresh={async () => {
@@ -267,6 +310,8 @@ export default function StatisticsScreen() {
                 lossesQuery.refetch(),
                 productionQuery.refetch(),
                 machineQuery.refetch(),
+                trgHistoryQuery.refetch(),
+                trsHistoryQuery.refetch(),
                 costQuery.refetch(),
               ]);
             }}
@@ -326,7 +371,7 @@ export default function StatisticsScreen() {
               </View>
             </ScrollView>
           ) : (
-            <NoDataState text={t('insufficientData')} palette={palette} />
+            <NoDataState text={EMPTY_TEXT} palette={palette} />
           )}
         </ChartCard>
 
@@ -350,7 +395,53 @@ export default function StatisticsScreen() {
               </View>
             </>
           ) : (
-            <NoDataState text={t('insufficientData')} palette={palette} />
+            <NoDataState text={EMPTY_TEXT} palette={palette} />
+          )}
+        </ChartCard>
+
+        <ChartCard title="TRG History" palette={palette} isDark={isDark} delay={350}>
+          {trgChart ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginHorizontal: -spacing.md }}>
+              <View style={{ marginLeft: spacing.md }}>
+                <BarChart
+                  data={trgChart}
+                  width={trgChartWidth}
+                  height={220}
+                  yAxisLabel=""
+                  yAxisSuffix="%"
+                  fromZero
+                  showValuesOnTopOfBars
+                  withInnerLines
+                  chartConfig={{ ...chartConfig, color: (opacity = 1) => `rgba(16, 185, 129, ${opacity})`, fillShadowGradient: '#10B981' }}
+                  style={styles.chart}
+                />
+              </View>
+            </ScrollView>
+          ) : (
+            <NoDataState text={EMPTY_TEXT} palette={palette} />
+          )}
+        </ChartCard>
+
+        <ChartCard title="TRS History" palette={palette} isDark={isDark} delay={375}>
+          {trsChart ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginHorizontal: -spacing.md }}>
+              <View style={{ marginLeft: spacing.md }}>
+                <BarChart
+                  data={trsChart}
+                  width={trsChartWidth}
+                  height={220}
+                  yAxisLabel=""
+                  yAxisSuffix="%"
+                  fromZero
+                  showValuesOnTopOfBars
+                  withInnerLines
+                  chartConfig={{ ...chartConfig, color: (opacity = 1) => `rgba(59, 130, 246, ${opacity})`, fillShadowGradient: '#3B82F6' }}
+                  style={styles.chart}
+                />
+              </View>
+            </ScrollView>
+          ) : (
+            <NoDataState text={EMPTY_TEXT} palette={palette} />
           )}
         </ChartCard>
 
@@ -381,7 +472,9 @@ export default function StatisticsScreen() {
               </Animated.View>
             ))}
           </Animated.View>
-        ) : null}
+        ) : (
+          <NoDataState text={EMPTY_TEXT} palette={palette} />
+        )}
       </ScrollView>
     </View>
   );
@@ -408,6 +501,25 @@ const styles = StyleSheet.create({
     paddingTop: spacing.lg,
     paddingBottom: spacing.sm,
   },
+  heroTopNav: {
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  heroBackBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroNavTitle: {
+    ...typography.bodyBold,
+    fontSize: 16,
+  },
   heroTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -417,6 +529,10 @@ const styles = StyleSheet.create({
     ...typography.h2,
     fontWeight: '900',
     letterSpacing: -0.5,
+  },
+  heroSubtitle: {
+    ...typography.small,
+    marginTop: spacing.xs,
   },
   heroBadge: {
     flexDirection: 'row',

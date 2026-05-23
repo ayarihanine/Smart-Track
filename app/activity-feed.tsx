@@ -5,7 +5,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
+import { spacing, typography, borderRadius, shadows } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
 import { useTranslation } from '@/hooks/useTranslation';
 

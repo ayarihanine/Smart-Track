@@ -38,7 +38,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
     // Extra State
     hasSeenOnboarding: false,
-    stuckCardThresholdHours: 4,
+    stuckCardThresholdHours: 36,
 
     setHasSeenOnboarding: (v: boolean) => set({ hasSeenOnboarding: v }),
     setStuckCardThreshold: async (hours: number) => {

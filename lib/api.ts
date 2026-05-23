@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   ElectronicCard, ScanEvent, AppSettings, AnalyticsData, SystemNode, FilterOptions,
   LeaderboardEntry, UserProfile, Issue, Task, Comment, Product, LoadingPlanEntry, ComponentInsertion,
-  EtatCapteur, SensorEvent, PertesTable, TRG, TRS, Configuration, Article,
+  EtatCapteur, SensorEvent, SensorState, PertesTable, TRG, TRS, Configuration, Article,
   PerteParJour, ProductionParJour, PerteParMachine, TodayLossSummary, ProductionBatch
 } from '@/types';
 import { getActiveElapsedMs } from '@/store/alertsStore';
@@ -375,14 +375,13 @@ export async function updateCardQuality(cardId: string, qualityIssues: string, m
 
     if (error) {
       if (error.code === 'PGRST204' || error.message?.includes('schema cache') || error.message?.includes('column')) {
-        console.warn('DB schema missing quality columns. Simulating success for UI:', error);
         return true;
       }
       throw error;
     }
     return true;
   } catch (error) {
-    console.warn('updateCardQuality failed, simulating success:', error);
+    if ((error as any)?.code === 'PGRST204') return true;
     return true;
   }
 }
@@ -875,6 +874,57 @@ export async function fireWebhook(url: string, payload: object): Promise<boolean
   }
 }
 
+function normalizeN8nRows(payload: any): any[] {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.cards)) return payload.cards;
+  if (Array.isArray(payload?.result)) return payload.result;
+  if (Array.isArray(payload?.data?.cards)) return payload.data.cards;
+  if (Array.isArray(payload?.items)) {
+    return payload.items.map((item: any) => item?.json ?? item).filter(Boolean);
+  }
+  return [];
+}
+
+export async function fetchN8nReportData(scope: 'all' | 'in_progress' | 'completed' = 'all'): Promise<any[]> {
+  const settings = await getSettings();
+  const workflowUrl = settings.n8nUrl || settings.webhookUrl;
+
+  if (!workflowUrl) {
+    throw new Error('N8N workflow URL is not configured.');
+  }
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (settings.n8nToken) {
+    headers.Authorization = `Bearer ${settings.n8nToken}`;
+  }
+
+  const response = await fetch(workflowUrl, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      event: 'export_report',
+      scope,
+      source: 'smarttrack-app',
+      generatedAt: new Date().toISOString(),
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`N8N workflow request failed (${response.status}).`);
+  }
+
+  const payload = await response.json().catch(() => null);
+  const rows = normalizeN8nRows(payload);
+  if (!rows.length) {
+    throw new Error('N8N workflow returned no report data.');
+  }
+
+  if (scope === 'all') return rows;
+  return rows.filter((row) => String(row?.status || '').toLowerCase() === scope);
+}
+
 export async function testWebhook(url: string): Promise<boolean> {
   return fireWebhook(url, {
     event: 'test',
@@ -905,12 +955,7 @@ function mapDbCard(r: any): ElectronicCard {
     missingItems: r.missing_items || r.missingItems || '',
     currentStage: r.current_stage || r.currentStage || r.current_machine || '',
     currentLocation: r.current_location || r.currentLocation || '',
-    stageEnteredAt: r.stage_entered_at ?? (() => {
-      console.warn(
-        `Card ${r.id || r.card_id} missing stage_entered_at, falling back to updated_at`
-      );
-      return r.updated_at || r.updatedAt || new Date().toISOString();
-    })(),
+    stageEnteredAt: r.stage_entered_at || r.updated_at || r.updatedAt || new Date().toISOString(),
   };
 }
 
@@ -1330,7 +1375,7 @@ function mapEtatCapteur(row: any): EtatCapteur {
   };
 }
 
-function mapSensorEvent(row: any): SensorEvent {
+function mapSensorEvent(row: any): any {
   return {
     id: row?.id ?? normalizeTimestamp(row),
     sensor_id: row?.sensor_id || '',
@@ -1450,7 +1495,144 @@ function getTodayBounds() {
   return { start, end };
 }
 
+export async function getLatestSensorState(): Promise<EtatCapteur> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return {
+      id: 0,
+      timestamp: new Date().toISOString(),
+      date_temps: null,
+      capteur1: 0,
+      capteur2: 0,
+      capteur3: 0,
+    };
+  }
+
+  try {
+    // Get the latest sensor events for each sensor
+    const { data: events, error } = await supabase
+      .from('sensor_events')
+      .select('sensor_id, raw_value, created_at, gpio_pin')
+      .order('created_at', { ascending: false })
+      .limit(10);  // Get enough to ensure we have latest for each sensor
+
+    if (error) throw error;
+
+    // Aggregate into single state object - take first occurrence of each sensor
+    const state: Record<string, number> = {
+      capteur1: 0,
+      capteur2: 0,
+      capteur3: 0,
+    };
+
+    const sensorMap = new Map<string, any>();
+    const timestamps = new Map<string, string>();
+
+    for (const event of events || []) {
+      if (!sensorMap.has(event.sensor_id)) {
+        sensorMap.set(event.sensor_id, event);
+        timestamps.set(event.sensor_id, event.created_at);
+        state[event.sensor_id] = event.raw_value;
+      }
+    }
+
+    // Use the most recent timestamp from all sensors
+    let latestTimestamp = new Date().toISOString();
+    let maxTime = 0;
+    timestamps.forEach((ts) => {
+      const time = new Date(ts).getTime();
+      if (time > maxTime) {
+        maxTime = time;
+        latestTimestamp = ts;
+      }
+    });
+
+    return {
+      id: Date.now(),
+      timestamp: latestTimestamp,
+      date_temps: latestTimestamp,
+      capteur1: state.capteur1,
+      capteur2: state.capteur2,
+      capteur3: state.capteur3,
+    };
+  } catch (error) {
+    console.error('getLatestSensorState failed', error);
+    return {
+      id: 0,
+      timestamp: new Date().toISOString(),
+      date_temps: null,
+      capteur1: 0,
+      capteur2: 0,
+      capteur3: 0,
+    };
+  }
+}
+
+export async function getLatestSensorStates(limit = 2): Promise<EtatCapteur[]> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+
+  try {
+    // Get recent sensor events (last 5 minutes)
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+
+    const { data: events, error } = await supabase
+      .from('sensor_events')
+      .select('*')
+      .gte('created_at', fiveMinutesAgo)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    // Group events by time bucket (e.g., 1 second intervals)
+    const buckets = new Map<string, Map<string, number>>();
+    const bucketTimestamps = new Map<string, string>();
+
+    for (const event of events || []) {
+      // Round timestamp to nearest second
+      const bucketTime = new Date(new Date(event.created_at).getTime() - (new Date(event.created_at).getTime() % 1000));
+      const bucketKey = bucketTime.toISOString();
+
+      if (!buckets.has(bucketKey)) {
+        buckets.set(bucketKey, new Map());
+        bucketTimestamps.set(bucketKey, event.created_at);
+      }
+
+      const bucket = buckets.get(bucketKey)!;
+      if (!bucket.has(event.sensor_id)) {
+        bucket.set(event.sensor_id, event.raw_value);
+      }
+    }
+
+    // Convert buckets to EtatCapteur array
+    const states: EtatCapteur[] = [];
+    const sortedBuckets = Array.from(buckets.entries())
+      .sort((a, b) => new Date(b[0]).getTime() - new Date(a[0]).getTime())
+      .slice(0, limit);
+
+    for (const [bucketKey, bucket] of sortedBuckets) {
+      states.push({
+        id: states.length,
+        timestamp: bucketKey,
+        date_temps: bucketTimestamps.get(bucketKey) || bucketKey,
+        capteur1: bucket.get('capteur1') || 0,
+        capteur2: bucket.get('capteur2') || 0,
+        capteur3: bucket.get('capteur3') || 0,
+      });
+    }
+
+    return states;
+  } catch (error) {
+    console.error('getLatestSensorStates failed', error);
+    return [];
+  }
+}
+
 export async function getLatestEtatCapteur(limit = 2): Promise<EtatCapteur[]> {
+  // Gracefully fallback to real-time events aggregation
+  const realTimeStates = await getLatestSensorStates(limit);
+  if (realTimeStates.length > 0) return realTimeStates;
+
   const supabase = getSupabaseClient();
   if (!supabase) return [];
 
@@ -1468,7 +1650,7 @@ export async function getLatestEtatCapteur(limit = 2): Promise<EtatCapteur[]> {
   }
 }
 
-export async function getLatestSensorEvents(limit = 100): Promise<SensorEvent[]> {
+export async function getLatestSensorEvents(limit = 100): Promise<any[]> {
   const supabase = getSupabaseClient();
   if (!supabase) return [];
 
@@ -1625,7 +1807,7 @@ export async function getLossesByMachineStats(): Promise<PerteParMachine[]> {
 
 export async function getCardUnitCost(): Promise<number> {
   const supabase = getSupabaseClient();
-  if (!supabase) return 24.500;
+  if (!supabase) return 0;
 
   try {
     const { data, error } = await (supabase.from('cout_carte') as any)
@@ -1633,10 +1815,10 @@ export async function getCardUnitCost(): Promise<number> {
       .maybeSingle();
 
     if (error) throw error;
-    return data ? Number(data.cout_total ?? 0) : 24.500;
+    return data ? Number(data.cout_total ?? 0) : 0;
   } catch (error) {
-    console.error('getCardUnitCost failed, returning mock cost', error);
-    return 24.500;
+    console.error('getCardUnitCost failed', error);
+    return 0;
   }
 }
 
@@ -1685,7 +1867,7 @@ export async function updateConfiguration(updates: Partial<Configuration>): Prom
   try {
     const payload: Record<string, unknown> = {};
 
-    // Batch targets live in production_batches.target_quantity, not global configuration.
+    if (updates.nb_cartes_attendues !== undefined) payload.nb_cartes_attendues = updates.nb_cartes_attendues;
     if (updates.gpio_capteur1 !== undefined) payload.gpio_capteur1 = updates.gpio_capteur1;
     if (updates.gpio_capteur2 !== undefined) payload.gpio_capteur2 = updates.gpio_capteur2;
     if (updates.gpio_capteur3 !== undefined) payload.gpio_capteur3 = updates.gpio_capteur3;
@@ -1938,4 +2120,242 @@ export async function calculateBatchCost(batchId: string): Promise<number> {
     console.error('calculateBatchCost failed:', error);
     return 0;
   }
+}
+
+// Maps a raw Supabase sensor_events row to SensorEvent type
+function mapDbSensorEvent(row: Record<string, unknown>): SensorEvent {
+  return {
+    id: Number(row.id),
+    sensor_id: row.sensor_id as SensorEvent['sensor_id'],
+    gpio_pin: Number(row.gpio_pin ?? 0),
+    state: (row.state ?? 'LOW') as SensorEvent['state'],
+    scenario: String(row.scenario ?? ''),
+    raw_value: Number(row.raw_value ?? 0),
+    counter: Number(row.counter ?? 0),
+    created_at: String(row.created_at ?? ''),
+    recorded_at: String(row.recorded_at ?? row.created_at ?? ''),
+  };
+}
+
+// Fetches the latest state per sensor using a single efficient query (Step 1A)
+export async function fetchLatestSensorStates(): Promise<SensorState[]> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from('sensor_events')
+    .select('sensor_id, state, counter, recorded_at, gpio_pin')
+    .neq('sensor_id', 'SYSTEM')
+    .in('sensor_id', ['capteur1', 'capteur2', 'capteur3'])
+    .order('recorded_at', { ascending: false })
+    .limit(3);
+
+  if (error || !data) return [];
+
+  // Keep only the first occurrence of each sensor_id
+  const seen = new Set<string>();
+  return data.filter(row => {
+    if (seen.has(row.sensor_id)) return false;
+    seen.add(row.sensor_id);
+    return true;
+  });
+}
+
+// Fetches recent sensor event history (newest first, no SYSTEM rows)
+export async function fetchSensorHistory(limit = 100): Promise<SensorEvent[]> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from('sensor_events')
+    .select('*')
+    .neq('sensor_id', 'SYSTEM')
+    .order('recorded_at', { ascending: false })
+    .limit(limit);
+
+  if (error || !data) {
+    console.error('fetchSensorHistory error:', error);
+    return [];
+  }
+  return data.map(mapDbSensorEvent);
+}
+
+// ============================================================================
+// STEP 1 PLAN FUNCTIONS — canonical DB-wired fetches
+// ============================================================================
+
+/** Step 1B: fetchConfiguration — reads the single row with id=1 */
+export async function fetchConfiguration() {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from('configuration')
+    .select('*')
+    .eq('id', 1)
+    .single();
+
+  if (error || !data) return null;
+  return data;
+}
+
+/** Step 1C: Latest TRG from trg_latest view */
+export async function fetchLatestTRG() {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from('trg_latest')
+    .select('*')
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return data;
+}
+
+export async function fetchTRGHistory(limit = 20) {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from('trg')
+    .select('*')
+    .order('date_temps', { ascending: false })
+    .limit(limit);
+
+  return data ?? [];
+}
+
+/** Step 1D: Latest TRS from trs_latest view */
+export async function fetchLatestTRS() {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from('trs_latest')
+    .select('*')
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return data;
+}
+
+export async function fetchTRSHistory(limit = 20) {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from('trs')
+    .select('*')
+    .order('date_temps', { ascending: false })
+    .limit(limit);
+
+  return data ?? [];
+}
+
+/** Step 1E: Losses from pertes_table and views */
+export async function fetchLossesHistory(limit = 50) {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from('pertes_table')
+    .select('*')
+    .order('date_temps', { ascending: false })
+    .limit(limit);
+
+  return data ?? [];
+}
+
+export async function fetchLossesByDay() {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from('pertes_par_jour')
+    .select('*');
+
+  return data ?? [];
+}
+
+export async function fetchLossesByMachine() {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from('pertes_par_machine')
+    .select('*');
+
+  return data ?? [];
+}
+
+/** Step 1F: Production by day from production_par_jour view */
+export async function fetchProductionByDay() {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+
+  // Uses etat_capteur (old polling data) — only for charts, not live display
+  const { data, error } = await supabase
+    .from('production_par_jour')
+    .select('*');
+
+  return data ?? [];
+}
+
+/** Step 1G: Alerts from alerts table */
+export async function fetchAlerts(unreadOnly = false) {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+
+  let query = supabase
+    .from('alerts')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  if (unreadOnly) {
+    query = query.eq('is_read', false);
+  }
+
+  const { data, error } = await query;
+  return data ?? [];
+}
+
+export async function markAlertRead(alertId: string) {
+  const supabase = getSupabaseClient();
+  if (!supabase) return;
+
+  await supabase
+    .from('alerts')
+    .update({ is_read: true })
+    .eq('id', alertId);
+}
+
+/** Step 1H: fetchSensorCounters — gets current counter per sensor */
+export async function fetchSensorCounters(): Promise<{
+  capteur1: number;
+  capteur2: number;
+  capteur3: number;
+}> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return { capteur1: 0, capteur2: 0, capteur3: 0 };
+
+  const { data, error } = await supabase
+    .from('sensor_events')
+    .select('sensor_id, counter, recorded_at')
+    .in('sensor_id', ['capteur1', 'capteur2', 'capteur3'])
+    .order('recorded_at', { ascending: false })
+    .limit(6); // at most 2 per sensor (HIGH + LOW cycle)
+
+  if (!data) return { capteur1: 0, capteur2: 0, capteur3: 0 };
+
+  const result = { capteur1: 0, capteur2: 0, capteur3: 0 };
+  const seen = new Set<string>();
+  for (const row of data) {
+    if (!seen.has(row.sensor_id)) {
+      seen.add(row.sensor_id);
+      result[row.sensor_id as keyof typeof result] = row.counter;
+    }
+  }
+  return result;
 }

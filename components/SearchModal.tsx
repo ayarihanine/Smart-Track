@@ -12,7 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
-import { borderRadius, colors, shadows, spacing, typography } from '@/constants/design';
+import { borderRadius, shadows, spacing, typography } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
 import { useTranslation } from '@/hooks/useTranslation';
 import { getCards } from '@/lib/api';

@@ -194,7 +194,7 @@ export const useAlertsStore = create<AlertsState>((set, get) => ({
     if (now - lastStuckCheck < STUCK_CHECK_INTERVAL_MS) return;
     lastStuckCheck = now;
 
-    const thresholdMs = Math.max(0.1, thresholdHours) * 60 * 60 * 1000;
+    const thresholdMs = Math.max(36, thresholdHours) * 60 * 60 * 1000;
     const existingAlerts = get().alerts;
     const existingById = new Map(existingAlerts.map(alert => [alert.id, alert]));
 
@@ -205,7 +205,7 @@ export const useAlertsStore = create<AlertsState>((set, get) => ({
           8,
           17
         );
-        return card.status !== 'completed' && timeInactive >= thresholdMs && timeInactive < 7 * 24 * 60 * 60 * 1000;
+        return card.status !== 'completed' && timeInactive >= thresholdMs;
       })
       .map(card => {
         const stageId = card.currentStage || card.currentLocation || 'unknown';

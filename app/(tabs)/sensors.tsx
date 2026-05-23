@@ -1,7 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -13,401 +12,151 @@ import { Ionicons } from '@expo/vector-icons';
 import { borderRadius, shadows, spacing, typography } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
 import { getSupabaseClient } from '@/lib/supabase';
-import { getConfiguration, getLatestEtatCapteur, getLatestSensorEvents } from '@/lib/api';
-import { useAlertsStore } from '@/store/alertsStore';
-import { SensorEvent } from '@/types/production';
+import { fetchLatestSensorStates } from '@/lib/api';
+import { SensorState } from '@/types';
 
-interface SensorState {
-  gpio: number;
-  active: boolean;
-  lastUpdated: string | null;
-  lastDetectedAt?: string | null;
-  sensorId?: string;
-  stateLabel?: string;
-  scenario?: string;
-  rawValue?: number;
-  source?: 'configuration' | 'etat_capteur' | 'sensor_events';
-}
-
-type SensorNumber = 1 | 2 | 3;
-type GpioPins = { gpio1: number; gpio2: number; gpio3: number };
-type EventLogType = 'info' | 'success' | 'warn';
-
-function formatEventTime(value?: string | null) {
-  const date = value ? new Date(value) : new Date();
-  if (Number.isNaN(date.getTime())) return new Date().toLocaleString();
-  return date.toLocaleString();
-}
-
-function normalizeSensorTimestamp(value?: string | null) {
-  const date = value ? new Date(value) : new Date();
-  if (Number.isNaN(date.getTime())) return new Date().toISOString();
-  return date.toISOString();
-}
-
-function isNewerReading(current: SensorState, nextTimestamp: string) {
-  if (!current.lastDetectedAt) return true;
-  return new Date(nextTimestamp).getTime() >= new Date(current.lastDetectedAt).getTime();
-}
-
-function formatSensorStatus(active: boolean) {
-  return active ? 'Active' : 'Low';
-}
-
-function getSensorGpio(sensorNum: SensorNumber, pins: GpioPins) {
-  if (sensorNum === 1) return pins.gpio1;
-  if (sensorNum === 2) return pins.gpio2;
-  return pins.gpio3;
-}
-
-function getEventActiveState(row: Partial<SensorEvent> | any) {
-  const state = String(row.state || '').trim().toLowerCase();
-  if (['1', 'active', 'high', 'on', 'true', 'triggered'].includes(state)) return true;
-  if (['0', 'inactive', 'low', 'off', 'false', 'idle'].includes(state)) return false;
-
-  const rawValue = Number(row.raw_value ?? row.rawValue);
-  return Number.isFinite(rawValue) ? rawValue === 1 : false;
-}
-
-function getSensorNumberFromEvent(row: Partial<SensorEvent> | any, pins: GpioPins): SensorNumber | null {
-  const sensorId = String(row.sensor_id || '').toLowerCase();
-  const directMatch = sensorId.match(/(?:sensor|capteur)[^0-9]*([123])/) || sensorId.match(/^([123])$/);
-  if (directMatch?.[1]) return Number(directMatch[1]) as SensorNumber;
-
-  const gpioPin = Number(row.gpio_pin ?? 0);
-  if (gpioPin === pins.gpio1) return 1;
-  if (gpioPin === pins.gpio2) return 2;
-  if (gpioPin === pins.gpio3) return 3;
-
-  return null;
-}
-
-function getSensorSetter(
-  sensorNum: SensorNumber,
-  setters: {
-    setSensor1: React.Dispatch<React.SetStateAction<SensorState>>;
-    setSensor2: React.Dispatch<React.SetStateAction<SensorState>>;
-    setSensor3: React.Dispatch<React.SetStateAction<SensorState>>;
+// Helper — call this for each sensor card
+function getSensorDisplay(state: 'HIGH' | 'LOW' | 'UNKNOWN') {
+  switch (state) {
+    case 'HIGH':
+      // HIGH = card IS in front of sensor (NPN pulled pin LOW)
+      return {
+        label: 'HIGH',
+        description: 'Card detected',
+        color: '#22c55e',   // green
+        dotColor: '#16a34a',
+      };
+    case 'LOW':
+      return {
+        label: 'LOW',
+        description: 'No card',
+        color: '#ef4444',   // red
+        dotColor: '#dc2626',
+      };
+    case 'UNKNOWN':
+    default:
+      return {
+        label: '---',
+        description: 'Waiting for data',
+        color: '#9ca3af',   // gray
+        dotColor: '#6b7280',
+      };
   }
-) {
-  if (sensorNum === 1) return setters.setSensor1;
-  if (sensorNum === 2) return setters.setSensor2;
-  return setters.setSensor3;
 }
 
-function applySensorReading(
-  sensorNum: SensorNumber,
-  setters: {
-    setSensor1: React.Dispatch<React.SetStateAction<SensorState>>;
-    setSensor2: React.Dispatch<React.SetStateAction<SensorState>>;
-    setSensor3: React.Dispatch<React.SetStateAction<SensorState>>;
-  },
-  next: Partial<SensorState> & { lastDetectedAt: string }
-) {
-  const setter = getSensorSetter(sensorNum, setters);
-  setter((prev) => {
-    if (!isNewerReading(prev, next.lastDetectedAt)) return prev;
-    return {
-      ...prev,
-      ...next,
-      lastUpdated: formatEventTime(next.lastDetectedAt),
-    };
-  });
-}
-
-function SensorMeta({ sensor, palette }: { sensor: SensorState; palette: any }) {
-  const details = [
-    sensor.sensorId ? `ID ${sensor.sensorId}` : null,
-    sensor.stateLabel ? `State ${sensor.stateLabel}` : null,
-    sensor.scenario ? `Scenario ${sensor.scenario}` : null,
-    sensor.rawValue !== undefined ? `Raw ${sensor.rawValue}` : null,
-    sensor.source ? `Source ${sensor.source}` : null,
-  ].filter((detail): detail is string => Boolean(detail));
-
-  if (details.length === 0) return null;
-
-  return (
-    <View style={styles.sensorMeta}>
-      {details.map((detail) => (
-        <View key={detail} style={[styles.sensorMetaChip, { backgroundColor: palette.backgroundSecondary }]}>
-          <Text style={[styles.sensorMetaText, { color: palette.textSecondary }]}>{detail}</Text>
-        </View>
-      ))}
-    </View>
-  );
+function formatTime(timestampString: string | null): string {
+  if (!timestampString) return '--:--:--';
+  try {
+    const date = new Date(timestampString);
+    if (isNaN(date.getTime())) return '--:--:--';
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  } catch {
+    return '--:--:--';
+  }
 }
 
 export default function SensorsTabScreen() {
   const { palette } = useTheme();
-  const { addAlert } = useAlertsStore();
-
+  
+  // STEP 3A: State initialization
+  const [sensorStates, setSensorStates] = useState<SensorState[]>([
+    { sensor_id: 'capteur1', state: 'LOW', counter: 0, recorded_at: '' },
+    { sensor_id: 'capteur2', state: 'LOW', counter: 0, recorded_at: '' },
+    { sensor_id: 'capteur3', state: 'LOW', counter: 0, recorded_at: '' },
+  ]);
   const [loading, setLoading] = useState(true);
-  const [piOnline, setPiOnline] = useState(false);
 
-  // Configuration GPIO values
-  const [gpioPins, setGpioPins] = useState({ gpio1: 0, gpio2: 0, gpio3: 0 });
-  const [cycleTime, setCycleTime] = useState(5); // default cycle time in seconds
-  const gpioPinsRef = useRef<GpioPins>({ gpio1: 0, gpio2: 0, gpio3: 0 });
-
-  // Real-time sensor states
-  const [sensor1, setSensor1] = useState<SensorState>({ gpio: 0, active: false, lastUpdated: null });
-  const [sensor2, setSensor2] = useState<SensorState>({ gpio: 0, active: false, lastUpdated: null });
-  const [sensor3, setSensor3] = useState<SensorState>({ gpio: 0, active: false, lastUpdated: null });
-
-  // Event stream log
-  const [events, setEvents] = useState<{ id: string; msg: string; time: string; type: EventLogType }[]>([]);
-
-  // Timers to detect stuck card signal
-  const sensorTimers = useRef<{ [key: number]: any }>({ 1: null, 2: null, 3: null });
-  const latestDetectedAt = useRef<Record<SensorNumber, string | null>>({ 1: null, 2: null, 3: null });
-
-  // track Pi heartbeat
-  const lastHeartbeatTime = useRef<number>(0);
-
-  const logEvent = useCallback((msg: string, type: EventLogType = 'info') => {
-    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    setEvents((prev) => [{ id: Math.random().toString(), msg, time, type }, ...prev.slice(0, 19)]);
-  }, []);
-
-  const acceptSensorReading = useCallback((sensorNum: SensorNumber, detectedAt: string) => {
-    const current = latestDetectedAt.current[sensorNum];
-    if (current && new Date(detectedAt).getTime() < new Date(current).getTime()) {
-      return false;
-    }
-
-    latestDetectedAt.current[sensorNum] = detectedAt;
-    return true;
-  }, []);
-
-  const handleStuckWatchdog = useCallback((sensorNum: SensorNumber, isActive: boolean, gpioPin: number) => {
-    if (!isActive) {
-      if (sensorTimers.current[sensorNum]) {
-        clearTimeout(sensorTimers.current[sensorNum]!);
-        sensorTimers.current[sensorNum] = null;
-      }
-      return;
-    }
-
-    if (sensorTimers.current[sensorNum]) return;
-
-    sensorTimers.current[sensorNum] = setTimeout(() => {
-      addAlert({
-        id: `stuck-sensor-${sensorNum}`,
-        type: 'blocking_anomaly',
-        severity: 'critical',
-        message: `Stuck Card Alert: Card detected on Sensor ${sensorNum} (GPIO ${gpioPin}) for too long (${cycleTime}s cycle exceeded).`,
-      });
-
-      logEvent(`ALERT: Sensor ${sensorNum} stuck for over ${cycleTime} seconds!`, 'warn');
-      Alert.alert(
-        'Stuck Card Alert',
-        `Sensor ${sensorNum} (GPIO ${gpioPin}) has been stuck active for longer than the cycle time of ${cycleTime} seconds!`,
-        [{ text: 'Acknowledge' }]
-      );
-    }, cycleTime * 1000);
-  }, [addAlert, cycleTime, logEvent]);
-
-  const updateSensorFromEtat = useCallback((row: any, pins: GpioPins = gpioPinsRef.current) => {
-    setPiOnline(true);
-    lastHeartbeatTime.current = Date.now();
-
-    const timestampValue = row.date_temps || row.timestamp || row.created_at || new Date().toISOString();
-    const detectedAt = normalizeSensorTimestamp(timestampValue);
-    const setters = { setSensor1, setSensor2, setSensor3 };
-
-    if (row.capteur1 !== undefined) {
-      const active = Number(row.capteur1) === 1;
-      if (acceptSensorReading(1, detectedAt)) {
-        applySensorReading(1, setters, {
-          gpio: pins.gpio1,
-          active,
-          lastDetectedAt: detectedAt,
-          stateLabel: formatSensorStatus(active),
-          rawValue: Number(row.capteur1),
-          source: 'etat_capteur',
-        });
-        handleStuckWatchdog(1, active, pins.gpio1);
-        if (active) logEvent(`etat_capteur: Sensor 1 (GPIO ${pins.gpio1}) is active`, 'info');
-      }
-    }
-
-    if (row.capteur2 !== undefined) {
-      const active = Number(row.capteur2) === 1;
-      if (acceptSensorReading(2, detectedAt)) {
-        applySensorReading(2, setters, {
-          gpio: pins.gpio2,
-          active,
-          lastDetectedAt: detectedAt,
-          stateLabel: formatSensorStatus(active),
-          rawValue: Number(row.capteur2),
-          source: 'etat_capteur',
-        });
-        handleStuckWatchdog(2, active, pins.gpio2);
-        if (active) logEvent(`etat_capteur: Sensor 2 (GPIO ${pins.gpio2}) is active`, 'info');
-      }
-    }
-
-    if (row.capteur3 !== undefined) {
-      const active = Number(row.capteur3) === 1;
-      if (acceptSensorReading(3, detectedAt)) {
-        applySensorReading(3, setters, {
-          gpio: pins.gpio3,
-          active,
-          lastDetectedAt: detectedAt,
-          stateLabel: formatSensorStatus(active),
-          rawValue: Number(row.capteur3),
-          source: 'etat_capteur',
-        });
-        handleStuckWatchdog(3, active, pins.gpio3);
-        if (active) logEvent(`etat_capteur: Sensor 3 (GPIO ${pins.gpio3}) is active`, 'info');
-      }
-    }
-  }, [acceptSensorReading, handleStuckWatchdog, logEvent]);
-
-  const updateSensorFromEvent = useCallback((row: any, pins: GpioPins = gpioPinsRef.current, isHistorical = false) => {
-    if (!isHistorical) {
-      setPiOnline(true);
-      lastHeartbeatTime.current = Date.now();
-    }
-
-    const sensorNum = getSensorNumberFromEvent(row, pins);
-    if (!sensorNum) {
-      logEvent(`sensor_events: Unmapped sensor ${row.sensor_id || 'unknown'} on GPIO ${row.gpio_pin || 'unknown'}`, 'warn');
-      return;
-    }
-
-    const active = getEventActiveState(row);
-    const mappedGpio = sensorNum === 1 ? pins.gpio1 : sensorNum === 2 ? pins.gpio2 : pins.gpio3;
-    const gpioPin = Number(row.gpio_pin || mappedGpio);
-    const detectedAt = normalizeSensorTimestamp(row.created_at);
-    const stateLabel = row.state || formatSensorStatus(active);
-    if (!acceptSensorReading(sensorNum, detectedAt)) return;
-
-    applySensorReading(sensorNum, { setSensor1, setSensor2, setSensor3 }, {
-      gpio: gpioPin,
-      active,
-      lastDetectedAt: detectedAt,
-      sensorId: row.sensor_id,
-      stateLabel,
-      scenario: row.scenario,
-      rawValue: Number(row.raw_value ?? 0),
-      source: 'sensor_events',
-    });
-
-    handleStuckWatchdog(sensorNum, active, gpioPin);
-    logEvent(
-      `sensor_events: ${row.sensor_id || `Sensor ${sensorNum}`} GPIO ${gpioPin} ${stateLabel} (${row.scenario || 'no scenario'})`,
-      active ? 'info' : 'success'
-    );
-  }, [acceptSensorReading, handleStuckWatchdog, logEvent]);
-
-  const loadSensorData = useCallback(async () => {
-    try {
-      setLoading(true);
-      const [config, latestSensorEvents] = await Promise.all([
-        getConfiguration(),
-        getLatestSensorEvents(100),
-      ]);
-
-      const pins = {
-        gpio1: Number(config?.gpio_capteur1 ?? 0),
-        gpio2: Number(config?.gpio_capteur2 ?? 0),
-        gpio3: Number(config?.gpio_capteur3 ?? 0),
-      };
-      const ct = Number(config?.cycle_time_seconds || 5);
-
-      gpioPinsRef.current = pins;
-      setGpioPins(pins);
-      setCycleTime(ct);
-      setSensor1((prev) => ({ ...prev, gpio: pins.gpio1, source: 'configuration' }));
-      setSensor2((prev) => ({ ...prev, gpio: pins.gpio2, source: 'configuration' }));
-      setSensor3((prev) => ({ ...prev, gpio: pins.gpio3, source: 'configuration' }));
-
-      // Find the single latest event for each sensor to update them with only their last data
-      const latestEventsMap: Record<string, any> = {};
-      latestSensorEvents.forEach((event) => {
-        const sensorNum = getSensorNumberFromEvent(event, pins);
-        if (sensorNum && !latestEventsMap[sensorNum]) {
-          latestEventsMap[sensorNum] = event;
-        }
-      });
-
-      // Process only the latest events (reversing them to process oldest of the three first)
-      Object.values(latestEventsMap)
-        .reverse()
-        .forEach((event) => updateSensorFromEvent(event, pins, true));
-
-      if (latestSensorEvents.length > 0) {
-        const newestEvent = latestSensorEvents[0];
-        const newestTime = new Date(newestEvent.created_at).getTime();
-        const now = Date.now();
-        
-        // If the Pi sent data within the last 20 seconds, it's online
-        if (now - newestTime <= 20000) {
-          setPiOnline(true);
-          lastHeartbeatTime.current = Date.now(); // Reset window from now
-        } else {
-          setPiOnline(false);
-          lastHeartbeatTime.current = 0; // Force offline immediately
-        }
-      } else {
-        setPiOnline(false);
-        lastHeartbeatTime.current = 0;
-      }
-    } catch (err) {
-      console.error('Error loading sensor data:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [updateSensorFromEvent]);
-
+  // STEP 3B: Initial data load
   useEffect(() => {
-    loadSensorData();
+    let mounted = true;
 
-    const supabase = getSupabaseClient();
-    if (!supabase) {
-      logEvent('Supabase client not available', 'warn');
-      setLoading(false);
-      return;
+    async function loadInitialStates() {
+      try {
+        const states = await fetchLatestSensorStates();
+        if (mounted && states.length > 0) {
+          setSensorStates(states);
+        }
+      } catch (e) {
+        console.error('Failed to load sensor states:', e);
+      } finally {
+        if (mounted) setLoading(false);
+      }
     }
 
-    const timers = sensorTimers.current;
-    logEvent('Connecting to Supabase Realtime...', 'info');
+    loadInitialStates();
+    return () => { mounted = false; };
+  }, []);
+
+  // STEP 3C: Real-time subscription
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
 
     const channel = supabase
-      .channel('sensor_updates')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sensor_events' }, (payload) => {
-        updateSensorFromEvent(payload.new);
-      })
+      .channel('sensor_events_realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'sensor_events',
+          filter: 'sensor_id=neq.SYSTEM',
+        },
+        (payload) => {
+          const row = payload.new as {
+            sensor_id: string;
+            state: string;
+            counter: number;
+            recorded_at: string;
+          };
+          if (!['capteur1', 'capteur2', 'capteur3'].includes(row.sensor_id)) return;
+
+          setSensorStates(prev => {
+            const updated = [...prev];
+            const idx = updated.findIndex(s => s.sensor_id === row.sensor_id);
+            const newState: SensorState = {
+              sensor_id: row.sensor_id as SensorState['sensor_id'],
+              state: row.state as 'HIGH' | 'LOW',
+              counter: row.counter,
+              recorded_at: row.recorded_at,
+            };
+            if (idx >= 0) updated[idx] = newState;
+            else updated.push(newState);
+            return updated;
+          });
+        }
+      )
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
-          logEvent('Live Supabase stream connected successfully', 'success');
-        } else {
-          logEvent(`Stream connection state: ${status}`, 'info');
+          console.log('[Acquisition] Realtime subscription active');
+        }
+        if (status === 'CHANNEL_ERROR') {
+          console.error('[Acquisition] Realtime subscription failed');
         }
       });
-
-    const heartbeatCheck = setInterval(() => {
-      const elapsed = Date.now() - lastHeartbeatTime.current;
-      if (elapsed > 20000) {
-        setPiOnline(false);
-      }
-    }, 5000);
 
     return () => {
       supabase.removeChannel(channel);
-      clearInterval(heartbeatCheck);
-      if (timers[1]) clearTimeout(timers[1]);
-      if (timers[2]) clearTimeout(timers[2]);
-      if (timers[3]) clearTimeout(timers[3]);
     };
-  }, [loadSensorData, logEvent, updateSensorFromEvent]);
+  }, []);
+
+  // STEP 3E: Counter-based loss indicator
+  const c1 = sensorStates.find(s => s.sensor_id === 'capteur1')?.counter ?? 0;
+  const c2 = sensorStates.find(s => s.sensor_id === 'capteur2')?.counter ?? 0;
+  const c3 = sensorStates.find(s => s.sensor_id === 'capteur3')?.counter ?? 0;
+
+  const lossZone1 = Math.max(0, c1 - c2);  // cards lost between sensor 1 and 2
+  const lossZone2 = Math.max(0, c2 - c3);  // cards lost between sensor 2 and 3
+  const totalLoss = lossZone1 + lossZone2;
+
+  const hasHighLoss = lossZone1 > 1 || lossZone2 > 1;
 
   if (loading) {
     return (
       <SafeAreaView style={[styles.container, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
         <View style={styles.loader}>
           <ActivityIndicator size="large" color={palette.primary} />
+          <Text style={[styles.loadingText, { color: palette.textSecondary }]}>Connecting to Pi5 interface...</Text>
         </View>
       </SafeAreaView>
     );
@@ -418,118 +167,142 @@ export default function SensorsTabScreen() {
       {/* Header */}
       <View style={[styles.header, { borderBottomColor: palette.border, backgroundColor: palette.background }]}>
         <View>
-          <Text style={[styles.headerTitle, { color: palette.text }]}>Acquisition Interface</Text>
-          <Text style={[styles.headerSubtitle, { color: palette.textSecondary }]}>Real-Time Sensor Monitoring</Text>
+          <Text style={[styles.headerTitle, { color: palette.text }]}>Pi5 Acquisition Interface</Text>
+          <Text style={[styles.headerSubtitle, { color: palette.textSecondary }]}>Real-time Sensor Monitoring</Text>
         </View>
-
-        <View style={[styles.statusBadge, { backgroundColor: piOnline ? '#10B9811A' : '#EF44441A', borderColor: piOnline ? '#10B9812E' : '#EF44442E' }]}>
-          <View style={[styles.statusDot, { backgroundColor: piOnline ? '#10B981' : '#EF4444' }]} />
-          <Text style={[styles.statusText, { color: piOnline ? '#10B981' : '#EF4444' }]}>
-            {piOnline ? 'Pi Online' : 'Pi Offline'}
-          </Text>
+        <View style={[styles.livePulse, { backgroundColor: '#10B9811A' }]}>
+          <View style={[styles.pulseDot, { backgroundColor: '#10B981' }]} />
+          <Text style={[styles.pulseText, { color: '#10B981' }]}>LIVE</Text>
         </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Sensor Grid */}
+        {/* Sensor Display Cards (CHANGE 3D) */}
         <View style={styles.sensorGrid}>
-          {/* Sensor 1 Card */}
-          <View style={[styles.sensorCard, { backgroundColor: palette.background, borderColor: sensor1.active ? '#10B981' : palette.border }, sensor1.active && styles.activeSensorShadow]}>
-            <View style={styles.sensorCardHeader}>
-              <View style={[styles.sensorIconWrap, { backgroundColor: sensor1.active ? '#10B9811F' : palette.border }]}>
-                <Ionicons name="enter-outline" size={20} color={sensor1.active ? '#10B981' : palette.textSecondary} />
-              </View>
-              <View style={[styles.gpioBadge, { backgroundColor: palette.backgroundSecondary }]}>
-                <Text style={[styles.gpioText, { color: palette.textSecondary }]}>GPIO {sensor1.gpio}</Text>
-              </View>
-            </View>
+          {sensorStates.map((sensor) => {
+            const display = getSensorDisplay(sensor.state || 'UNKNOWN');
+            const iconName = sensor.sensor_id === 'capteur1' 
+              ? 'enter-outline' 
+              : sensor.sensor_id === 'capteur2' 
+                ? 'git-commit-outline' 
+                : 'exit-outline';
 
-            <Text style={[styles.sensorName, { color: palette.text }]}>Sensor 1 (GPIO {sensor1.gpio})</Text>
-            <View style={styles.statusRow}>
-              <Text style={[styles.sensorStatus, { color: sensor1.active ? '#10B981' : palette.textTertiary }]}>
-                {formatSensorStatus(sensor1.active)}
-              </Text>
-              {sensor1.lastUpdated && (
-                <Text style={[styles.lastUpdate, { color: palette.textTertiary }]}>Last Update: {sensor1.lastUpdated}</Text>
-              )}
-            </View>
-            <SensorMeta sensor={sensor1} palette={palette} />
-          </View>
+            return (
+              <View 
+                key={sensor.sensor_id} 
+                style={[
+                  styles.sensorCard, 
+                  { 
+                    backgroundColor: palette.background, 
+                    borderColor: sensor.state === 'HIGH' ? '#22c55e' : palette.border 
+                  }
+                ]}
+              >
+                <View style={styles.sensorCardHeader}>
+                  <View style={[styles.iconContainer, { backgroundColor: display.color + '20' }]}>
+                    <Ionicons name={iconName} size={20} color={display.color} />
+                  </View>
+                  <View style={styles.sensorIdentity}>
+                    <Text style={[styles.sensorLabelText, { color: palette.text }]}>
+                      {sensor.sensor_id === 'capteur1' 
+                        ? 'Sensor 1 (Entry)' 
+                        : sensor.sensor_id === 'capteur2' 
+                          ? 'Sensor 2 (Middle)' 
+                          : 'Sensor 3 (Exit)'}
+                    </Text>
+                    <Text style={[styles.sensorIdSub, { color: palette.textTertiary }]}>
+                      {sensor.sensor_id}
+                    </Text>
+                  </View>
+                  <View style={[styles.stateIndicatorBadge, { backgroundColor: display.color + '15' }]}>
+                    <View style={[styles.indicatorDot, { backgroundColor: display.dotColor }]} />
+                    <Text style={[styles.stateLabelText, { color: display.dotColor }]}>
+                      {display.label}
+                    </Text>
+                  </View>
+                </View>
 
-          {/* Sensor 2 Card */}
-          <View style={[styles.sensorCard, { backgroundColor: palette.background, borderColor: sensor2.active ? '#10B981' : palette.border }, sensor2.active && styles.activeSensorShadow]}>
-            <View style={styles.sensorCardHeader}>
-              <View style={[styles.sensorIconWrap, { backgroundColor: sensor2.active ? '#10B9811F' : palette.border }]}>
-                <Ionicons name="git-commit-outline" size={20} color={sensor2.active ? '#10B981' : palette.textSecondary} />
-              </View>
-              <View style={[styles.gpioBadge, { backgroundColor: palette.backgroundSecondary }]}>
-                <Text style={[styles.gpioText, { color: palette.textSecondary }]}>GPIO {sensor2.gpio}</Text>
-              </View>
-            </View>
+                <View style={styles.cardDivider} />
 
-            <Text style={[styles.sensorName, { color: palette.text }]}>Sensor 2 (GPIO {sensor2.gpio})</Text>
-            <View style={styles.statusRow}>
-              <Text style={[styles.sensorStatus, { color: sensor2.active ? '#10B981' : palette.textTertiary }]}>
-                {formatSensorStatus(sensor2.active)}
-              </Text>
-              {sensor2.lastUpdated && (
-                <Text style={[styles.lastUpdate, { color: palette.textTertiary }]}>Last Update: {sensor2.lastUpdated}</Text>
-              )}
-            </View>
-            <SensorMeta sensor={sensor2} palette={palette} />
-          </View>
-
-          {/* Sensor 3 Card */}
-          <View style={[styles.sensorCard, { backgroundColor: palette.background, borderColor: sensor3.active ? '#10B981' : palette.border }, sensor3.active && styles.activeSensorShadow]}>
-            <View style={styles.sensorCardHeader}>
-              <View style={[styles.sensorIconWrap, { backgroundColor: sensor3.active ? '#10B9811F' : palette.border }]}>
-                <Ionicons name="exit-outline" size={20} color={sensor3.active ? '#10B981' : palette.textSecondary} />
+                <View style={styles.cardInfoRow}>
+                  <View style={styles.infoCol}>
+                    <Text style={[styles.infoLabel, { color: palette.textTertiary }]}>COUNTER</Text>
+                    <Text style={[styles.infoValue, { color: palette.text }]}>{sensor.counter}</Text>
+                  </View>
+                  <View style={styles.infoCol}>
+                    <Text style={[styles.infoLabel, { color: palette.textTertiary }]}>LAST DETECTED</Text>
+                    <Text style={[styles.infoValue, { color: palette.text }]}>
+                      {formatTime(sensor.recorded_at)}
+                    </Text>
+                  </View>
+                </View>
               </View>
-              <View style={[styles.gpioBadge, { backgroundColor: palette.backgroundSecondary }]}>
-                <Text style={[styles.gpioText, { color: palette.textSecondary }]}>GPIO {sensor3.gpio}</Text>
-              </View>
-            </View>
-
-            <Text style={[styles.sensorName, { color: palette.text }]}>Sensor 3 (GPIO {sensor3.gpio})</Text>
-            <View style={styles.statusRow}>
-              <Text style={[styles.sensorStatus, { color: sensor3.active ? '#10B981' : palette.textTertiary }]}>
-                {formatSensorStatus(sensor3.active)}
-              </Text>
-              {sensor3.lastUpdated && (
-                <Text style={[styles.lastUpdate, { color: palette.textTertiary }]}>Last Update: {sensor3.lastUpdated}</Text>
-              )}
-            </View>
-            <SensorMeta sensor={sensor3} palette={palette} />
-          </View>
+            );
+          })}
         </View>
 
-        {/* Live Event Log */}
-        <View style={[styles.card, { backgroundColor: palette.background, borderColor: palette.border }]}>
-          <View style={styles.logHeader}>
-            <Text style={[styles.cardTitle, { color: palette.text }]}>Live Acquisition Stream</Text>
-            <View style={styles.livePulse}>
-              <View style={[styles.pulseDot, { backgroundColor: piOnline ? '#10B981' : '#EF4444' }]} />
-              <Text style={[styles.pulseText, { color: piOnline ? '#10B981' : '#EF4444' }]}>LIVE</Text>
+        {/* Counter-based Loss Indicator Section (CHANGE 3E) */}
+        <View 
+          style={[
+            styles.lossCard, 
+            { 
+              backgroundColor: palette.background, 
+              borderColor: hasHighLoss ? '#f97316' : palette.border 
+            }
+          ]}
+        >
+          <View style={styles.lossHeader}>
+            <View style={[styles.lossIconContainer, { backgroundColor: hasHighLoss ? '#f973161A' : '#10B9811A' }]}>
+              <Ionicons 
+                name={hasHighLoss ? 'warning' : 'shield-checkmark'} 
+                size={22} 
+                color={hasHighLoss ? '#f97316' : '#10B981'} 
+              />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.lossTitle, { color: palette.text }]}>CMS Production Loss Analysis</Text>
+              <Text style={[styles.lossSubtitle, { color: palette.textSecondary }]}>
+                Real-time tracking of discrepancies between stages
+              </Text>
             </View>
           </View>
 
-          <ScrollView style={styles.logList} nestedScrollEnabled={true}>
-            {events.length === 0 ? (
-              <Text style={[styles.emptyLogText, { color: palette.textTertiary }]}>Awaiting sensor events...</Text>
-            ) : (
-              events.map((evt) => (
-                <View key={evt.id} style={styles.logItem}>
-                  <Text style={[styles.logTime, { color: palette.textSecondary }]}>[{evt.time}]</Text>
-                  <Text style={[
-                    styles.logMsg, 
-                    { color: evt.type === 'success' ? '#10B981' : evt.type === 'warn' ? '#EF4444' : palette.text }
-                  ]}>
-                    {evt.msg}
-                  </Text>
-                </View>
-              ))
-            )}
-          </ScrollView>
+          <View style={styles.lossGrid}>
+            <View style={[styles.lossBox, { backgroundColor: palette.backgroundSecondary }]}>
+              <Text style={[styles.lossBoxLabel, { color: palette.textSecondary }]}>Zone 1 Loss (S1 → S2)</Text>
+              <Text 
+                style={[
+                  styles.lossBoxValue, 
+                  { color: lossZone1 > 1 ? '#f97316' : palette.text }
+                ]}
+              >
+                {lossZone1}
+              </Text>
+            </View>
+
+            <View style={[styles.lossBox, { backgroundColor: palette.backgroundSecondary }]}>
+              <Text style={[styles.lossBoxLabel, { color: palette.textSecondary }]}>Zone 2 Loss (S2 → S3)</Text>
+              <Text 
+                style={[
+                  styles.lossBoxValue, 
+                  { color: lossZone2 > 1 ? '#f97316' : palette.text }
+                ]}
+              >
+                {lossZone2}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.cardDivider} />
+
+          <View style={styles.lossTotalRow}>
+            <Text style={[styles.lossTotalLabel, { color: palette.text }]}>Total Line Loss</Text>
+            <View style={[styles.lossTotalBadge, { backgroundColor: hasHighLoss ? '#ef444415' : '#10B98115' }]}>
+              <Text style={[styles.lossTotalValue, { color: hasHighLoss ? '#ef4444' : '#10B981' }]}>
+                {totalLoss} cards
+              </Text>
+            </View>
+          </View>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -544,6 +317,10 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: spacing.md,
+  },
+  loadingText: {
+    ...typography.small,
   },
   header: {
     padding: spacing.md,
@@ -562,23 +339,23 @@ const styles = StyleSheet.create({
     ...typography.tiny,
     marginTop: 2,
   },
-  statusBadge: {
+  livePulse: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
-    borderRadius: borderRadius.full,
+    gap: 6,
     paddingHorizontal: 10,
     paddingVertical: 5,
-    gap: 6,
+    borderRadius: borderRadius.full,
   },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+  pulseDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
-  statusText: {
+  pulseText: {
     ...typography.tiny,
-    fontWeight: 'bold',
+    fontWeight: '900',
+    letterSpacing: 0.5,
   },
   content: {
     padding: spacing.lg,
@@ -597,120 +374,130 @@ const styles = StyleSheet.create({
   sensorCardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: spacing.sm,
+    gap: spacing.md,
   },
-  sensorIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  iconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  gpioBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: borderRadius.sm,
+  sensorIdentity: {
+    flex: 1,
   },
-  gpioText: {
-    ...typography.tiny,
-    fontWeight: '700',
-  },
-  sensorName: {
+  sensorLabelText: {
     ...typography.bodyBold,
-    fontSize: 16,
-    marginBottom: spacing.xs,
+    fontSize: 15,
   },
-  statusRow: {
+  sensorIdSub: {
+    ...typography.tiny,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  stateIndicatorBadge: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: borderRadius.full,
+  },
+  indicatorDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  stateLabelText: {
+    ...typography.smallBold,
+    letterSpacing: 0.5,
+  },
+  cardDivider: {
+    height: 1,
+    backgroundColor: '#E5E7EB',
+    opacity: 0.5,
+    marginVertical: spacing.md,
+  },
+  cardInfoRow: {
+    flexDirection: 'row',
     justifyContent: 'space-between',
   },
-  sensorStatus: {
-    ...typography.captionBold,
-    fontWeight: '800',
-    letterSpacing: 0.6,
+  infoCol: {
+    flex: 1,
   },
-  lastUpdate: {
-    ...typography.tiny,
-  },
-  sensorMeta: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    marginTop: spacing.sm,
-  },
-  sensorMetaChip: {
-    borderRadius: borderRadius.sm,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  sensorMetaText: {
+  infoLabel: {
     ...typography.tiny,
     fontWeight: '700',
+    marginBottom: 4,
   },
-  activeSensorShadow: {
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 4,
+  infoValue: {
+    ...typography.bodyBold,
+    fontSize: 16,
   },
-  card: {
+  lossCard: {
     borderWidth: 1,
     borderRadius: borderRadius.xl,
     padding: spacing.lg,
     ...shadows.sm,
   },
-  cardTitle: {
-    ...typography.bodyBold,
-    fontSize: 18,
+  lossHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    marginBottom: spacing.md,
   },
-  logHeader: {
+  lossIconContainer: {
+    width: 42,
+    height: 42,
+    borderRadius: borderRadius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  lossTitle: {
+    ...typography.bodyBold,
+    fontSize: 16,
+  },
+  lossSubtitle: {
+    ...typography.tiny,
+    marginTop: 2,
+  },
+  lossGrid: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+  lossBox: {
+    flex: 1,
+    padding: spacing.md,
+    borderRadius: borderRadius.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  lossBoxLabel: {
+    ...typography.tiny,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  lossBoxValue: {
+    ...typography.h3,
+    fontWeight: '800',
+  },
+  lossTotalRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
-    paddingBottom: spacing.sm,
+    marginTop: spacing.xs,
   },
-  livePulse: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+  lossTotalLabel: {
+    ...typography.bodyBold,
   },
-  pulseDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+  lossTotalBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: borderRadius.full,
   },
-  pulseText: {
-    ...typography.tiny,
-    fontWeight: '900',
-    letterSpacing: 0.5,
-  },
-  logList: {
-    maxHeight: 400,
-  },
-  emptyLogText: {
-    ...typography.body,
-    textAlign: 'center',
-    paddingVertical: spacing.xl,
-  },
-  logItem: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: spacing.sm,
-    paddingVertical: 4,
-  },
-  logTime: {
-    fontFamily: 'Courier',
-    ...typography.tiny,
-    fontWeight: '600',
-  },
-  logMsg: {
-    ...typography.tiny,
-    flex: 1,
+  lossTotalValue: {
+    ...typography.smallBold,
   },
 });

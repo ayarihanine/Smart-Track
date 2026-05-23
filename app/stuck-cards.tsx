@@ -18,7 +18,7 @@ import { getActiveElapsedMs } from '@/store/alertsStore';
 
 export default function StuckCardsScreen() {
   const { t } = useTranslation();
-  const { palette, isDark } = useTheme();
+  const { palette } = useTheme();
   const stuckThreshold = useSettingsStore(s => s.stuckCardThresholdHours);
   const [alertingId, setAlertingId] = useState<string | null>(null);
 
@@ -59,7 +59,7 @@ export default function StuckCardsScreen() {
     };
   }, []);
 
-  const thresholdMs = Math.max(0.1, stuckThreshold) * 60 * 60 * 1000;
+  const thresholdMs = Math.max(36, stuckThreshold) * 60 * 60 * 1000;
   const stuckCards = (cards || []).filter(c => {
     const timeInactive = getActiveElapsedMs(
       c.stageEnteredAt || c.updatedAt,
@@ -108,6 +108,18 @@ export default function StuckCardsScreen() {
         contentContainerStyle={styles.scrollContent}
         refreshControl={<RefreshControl refreshing={isLoading} onRefresh={fetchCards} tintColor={colors.primary} />}
       >
+        {!isLoading && stuckCards.length > 0 ? (
+          <View style={[styles.summaryCard, { backgroundColor: palette.background, borderColor: palette.border }]}> 
+            <View>
+              <Text style={[styles.summaryKicker, { color: palette.textSecondary }]}>Monitoring</Text>
+              <Text style={[styles.summaryValue, { color: palette.text }]}>{stuckCards.length} cards need action</Text>
+            </View>
+            <View style={[styles.summaryPill, { backgroundColor: '#FEE2E2' }]}>
+              <Text style={styles.summaryPillText}>Threshold {Math.max(36, stuckThreshold)}h</Text>
+            </View>
+          </View>
+        ) : null}
+
         {isLoading ? (
           <View style={styles.centerContainer}>
             <ActivityIndicator size="large" color={colors.primary} />
@@ -155,10 +167,15 @@ export default function StuckCardsScreen() {
                   <Ionicons name="help-circle-outline" size={16} color={colors.warning} />
                   <Text style={[styles.reasonTitle, { color: colors.warning }]}>{t('stuckReason')}</Text>
                 </View>
-                <Text style={[styles.reasonText, { color: palette.text }]}>
+                <Text style={[styles.reasonText, { color: palette.text }]}> 
                   {card.qualityIssues || card.missingItems || t('noReasonReported')}
                 </Text>
               </View>
+
+              <TouchableOpacity style={[styles.viewBtn, { borderColor: palette.border }]} onPress={() => router.push(`/card/${card.cardId}`)}>
+                <Text style={[styles.viewBtnText, { color: palette.text }]}>Open Card Details</Text>
+                <Ionicons name="arrow-forward" size={16} color={palette.textSecondary} />
+              </TouchableOpacity>
 
               <TouchableOpacity 
                 style={[
@@ -201,7 +218,20 @@ const styles = StyleSheet.create({
   backBtn: { padding: 4 },
   headerTitle: { ...typography.h4, fontWeight: '700' },
   scroll: { flex: 1 },
-  scrollContent: { padding: spacing.md, paddingBottom: spacing.xl },
+  scrollContent: { padding: spacing.md, paddingBottom: spacing.xxxl },
+  summaryCard: {
+    borderWidth: 1,
+    borderRadius: borderRadius.xl,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  summaryKicker: { ...typography.tiny, fontWeight: '800', textTransform: 'uppercase' },
+  summaryValue: { ...typography.bodyBold, marginTop: 4 },
+  summaryPill: { paddingHorizontal: spacing.sm, paddingVertical: 6, borderRadius: borderRadius.full },
+  summaryPillText: { ...typography.tiny, fontWeight: '800', color: '#B91C1C' },
   centerContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 400 },
   emptyContainer: { alignItems: 'center', justifyContent: 'center', minHeight: 400, padding: spacing.xl },
   emptyIconContainer: { width: 120, height: 120, borderRadius: 60, alignItems: 'center', justifyContent: 'center', marginBottom: spacing.lg },
@@ -223,6 +253,17 @@ const styles = StyleSheet.create({
   reasonHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
   reasonTitle: { ...typography.tiny, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5 },
   reasonText: { ...typography.caption, lineHeight: 20 },
+  viewBtn: {
+    height: 42,
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.md,
+  },
+  viewBtnText: { ...typography.smallBold },
   alertBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 8, paddingVertical: 12, borderRadius: borderRadius.lg,

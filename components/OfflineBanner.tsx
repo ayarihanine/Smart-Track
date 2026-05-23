@@ -1,16 +1,12 @@
 import React from 'react';
-import { View, Text, StyleSheet, Animated } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useOfflineSync } from '@/hooks/useOfflineSync';
 import { colors, spacing, typography } from '@/constants/design';
-import { useTheme } from '@/components/ThemeProvider';
-import { useTranslation } from '@/hooks/useTranslation';
 
 export function OfflineBanner() {
   const { isOnline, queueSize, syncing } = useOfflineSync();
-  const { palette } = useTheme();
-  const { t } = useTranslation();
 
   if (isOnline && queueSize === 0) return null;
 

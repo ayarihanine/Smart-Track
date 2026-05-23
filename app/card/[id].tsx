@@ -1,13 +1,14 @@
 import React, { useMemo } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet, ActivityIndicator, TouchableOpacity, TextInput
+  View, Text, ScrollView, StyleSheet, ActivityIndicator, TouchableOpacity, TextInput, Alert
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useMutation } from '@tanstack/react-query';
+import { LinearGradient } from 'expo-linear-gradient';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
-import { getCard, updateCardQuality, reassignCard, getScanEvents } from '@/lib/api';
+import { createIssue, getCard, updateCardQuality, reassignCard, getScanEvents } from '@/lib/api';
 import { ElectronicCard, ScanEvent } from '@/types';
 import { useAuthStore } from '@/store/authStore';
 import { useTheme } from '@/components/ThemeProvider';
@@ -90,13 +91,13 @@ export default function CardDetailScreen() {
     return () => { supabase.removeChannel(ch); };
   }, [id, fetchCardDetails]);
 
-  // Delayed banner: card at current stage > 4 hours of active working time
+  // Delayed banner: card at current stage > 36 hours of active working time
   const isDelayed = useMemo(() => {
     if (!card || card.status === 'completed') return false;
     const ref = card.stageEnteredAt || card.updatedAt;
     if (!ref) return false;
     const activeMs = getActiveElapsedMs(ref, 8, 17);
-    return activeMs / 60000 > 240;
+    return activeMs / (1000 * 60 * 60) >= 36;
   }, [card]);
 
   // Sync quality fields when card loads
@@ -125,6 +126,28 @@ export default function CardDetailScreen() {
       setIsReassigning(false);
       setReassignNote('');
       setNewLocation('');
+    },
+  });
+
+  const createIssueMutation = useMutation({
+    mutationFn: async () => {
+      if (!card) throw new Error('No card');
+      await updateCardQuality(card.cardId, qualityIssues, missingItems);
+      const issueText = [qualityIssues.trim(), missingItems.trim()].filter(Boolean).join(' | ');
+      return createIssue({
+        title: `Quality issue - ${card.cardId}`,
+        description: issueText || `Escalated from card ${card.cardId}`,
+        priority: 'high',
+        cardId: card.cardId,
+        reportedBy: user?.id,
+        status: 'open',
+      } as any);
+    },
+    onSuccess: () => {
+      Alert.alert('Success', 'Issue created from card quality section.');
+    },
+    onError: (err: any) => {
+      Alert.alert('Error', err?.message || 'Failed to create issue.');
     },
   });
 
@@ -193,7 +216,12 @@ export default function CardDetailScreen() {
         )}
 
         {/* ── Overview Card ── */}
-        <View style={styles.overviewCard}>
+        <LinearGradient
+          colors={['#0F766E', '#115E59', '#134E4A']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.overviewCard}
+        >
           {/* Progress */}
           <View style={styles.progressSection}>
             <View style={styles.progressHeader}>
@@ -230,7 +258,7 @@ export default function CardDetailScreen() {
               <Text style={styles.statValue}>{card.scanPoints ?? scanEvents.length}</Text>
             </View>
           </View>
-        </View>
+        </LinearGradient>
 
         {/* ── Production History ── */}
         <View style={[styles.section, { backgroundColor: palette.background, borderColor: palette.border }]}>
@@ -283,8 +311,8 @@ export default function CardDetailScreen() {
                     </Text>
                   )}
                   {event.notes ? (
-                    <Text style={[styles.timelineNotes, { color: palette.textTertiary }]}>
-                      "{event.notes}"
+                    <Text style={[styles.timelineNotes, { color: palette.textTertiary }]}> 
+                      {`"${event.notes}"`}
                     </Text>
                   ) : null}
                 </View>
@@ -294,26 +322,12 @@ export default function CardDetailScreen() {
         </View>
 
         {/* ── Quality & Issues ── */}
-        <View style={[styles.section, { backgroundColor: palette.background, borderColor: palette.border }]}>
+        <View style={[styles.section, { backgroundColor: palette.background, borderColor: palette.border }]}> 
           <View style={styles.sectionHeader}>
             <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('qualityAndIssues')}</Text>
-            {!isEditingQuality ? (
-              <TouchableOpacity onPress={() => setIsEditingQuality(true)} style={styles.actionLink}>
-                <Ionicons name="create-outline" size={15} color={colors.primary} />
-                <Text style={[styles.actionLinkText, { color: colors.primary }]}>{t('edit')}</Text>
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity
-                onPress={() => updateQualityMutation.mutate()}
-                disabled={updateQualityMutation.isPending}
-                style={[styles.actionLink, { opacity: updateQualityMutation.isPending ? 0.5 : 1 }]}
-              >
-                <Ionicons name="checkmark-outline" size={15} color="#10B981" />
-                <Text style={[styles.actionLinkText, { color: '#10B981' }]}>
-                  {updateQualityMutation.isPending ? t('saving') : t('save')}
-                </Text>
-              </TouchableOpacity>
-            )}
+            <View style={[styles.livePill, { backgroundColor: palette.backgroundSecondary, borderColor: palette.border }]}> 
+              <Text style={[styles.livePillText, { color: palette.textSecondary }]}>Quality Log</Text>
+            </View>
           </View>
 
           {/* Quality Issues */}
@@ -360,6 +374,32 @@ export default function CardDetailScreen() {
                 {card.missingItems || t('noMissingItems')}
               </Text>
             )}
+          </View>
+
+          <View style={[styles.qualityActionsRow, { borderTopColor: palette.border }]}> 
+            <TouchableOpacity
+              style={[styles.qualityActionBtn, { borderColor: palette.border, backgroundColor: palette.backgroundSecondary }]}
+              onPress={() => {
+                if (isEditingQuality) {
+                  updateQualityMutation.mutate();
+                } else {
+                  setIsEditingQuality(true);
+                }
+              }}
+            >
+              <Ionicons name={isEditingQuality ? 'save-outline' : 'create-outline'} size={16} color={palette.textSecondary} />
+              <Text style={[styles.qualityActionText, { color: palette.textSecondary }]}>
+                {isEditingQuality ? (updateQualityMutation.isPending ? 'Saving...' : 'Save Notes') : 'Edit Notes'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.qualityActionBtnPrimary, { opacity: createIssueMutation.isPending || (!qualityIssues.trim() && !missingItems.trim()) ? 0.7 : 1 }]}
+              onPress={() => createIssueMutation.mutate()}
+              disabled={createIssueMutation.isPending || (!qualityIssues.trim() && !missingItems.trim())}
+            >
+              <Ionicons name="alert-circle-outline" size={16} color="#FFFFFF" />
+              <Text style={styles.qualityActionPrimaryText}>{createIssueMutation.isPending ? 'Escalating...' : 'Escalate Issue'}</Text>
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -567,8 +607,43 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.full,
   },
   badgeText: { ...typography.tiny, fontWeight: '700' },
-  actionLink: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  actionLinkText: { ...typography.smallBold },
+  livePill: {
+    borderWidth: 1,
+    borderRadius: borderRadius.full,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 5,
+  },
+  livePillText: { ...typography.tiny, fontWeight: '700', textTransform: 'uppercase' },
+  qualityActionsRow: {
+    marginTop: spacing.md,
+    borderTopWidth: 1,
+    paddingTop: spacing.md,
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  qualityActionBtn: {
+    flex: 1,
+    height: 42,
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  qualityActionBtnPrimary: {
+    flex: 1,
+    height: 42,
+    borderRadius: borderRadius.lg,
+    backgroundColor: '#0F766E',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    ...shadows.xs,
+  },
+  qualityActionText: { ...typography.smallBold },
+  qualityActionPrimaryText: { ...typography.smallBold, color: '#FFFFFF' },
 
   // Timeline
   emptyState: { alignItems: 'center', paddingVertical: spacing.xl, gap: spacing.sm },

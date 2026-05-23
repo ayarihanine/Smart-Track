@@ -1,59 +1,102 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Animated } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Animated, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { useAlertsStore } from '@/store/alertsStore';
-import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
+import { spacing, typography, borderRadius, shadows } from '@/constants/design';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
+import { fetchAlerts, markAlertRead } from '@/lib/api';
+import { getSupabaseClient } from '@/lib/supabase';
+import { Alert as DbAlert } from '@/types';
 
 const SEVERITY_STYLE = {
-  warning: { bg: '#FFFBEB', border: '#FDE68A', icon: 'warning', color: '#D97706', lightBg: '#FFFBEB' },
-  error: { bg: '#FEF2F2', border: '#FECACA', icon: 'alert-circle', color: '#DC2626', lightBg: '#FEF2F2' },
-  medium: { bg: '#FFFBEB', border: '#FDE68A', icon: 'warning', color: '#D97706', lightBg: '#FFFBEB' },
-  high: { bg: '#FFFDF5', border: '#FED7AA', icon: 'warning', color: '#EA580C', lightBg: '#FFFDF5' },
-  critical: { bg: '#FEF2F2', border: '#FECACA', icon: 'alert-circle', color: '#DC2626', lightBg: '#FEF2F2' },
+  low: { bg: '#DBEAFE', border: '#BFDBFE', icon: 'information-circle', color: '#2563EB' },
+  medium: { bg: '#FFFBEB', border: '#FDE68A', icon: 'warning', color: '#D97706' },
+  high: { bg: '#FEF2F2', border: '#FECACA', icon: 'alert-circle', color: '#DC2626' },
 };
 
 export default function NotificationsScreen() {
   const { t } = useTranslation();
   const { palette, isDark } = useTheme();
-  const { alerts, dismissAlert, clearAll } = useAlertsStore();
-  const active = alerts.filter(a => !a.dismissed);
+  const [alerts, setAlerts] = useState<DbAlert[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+  const active = alerts;
+  const unreadCount = alerts.filter(alert => !alert.is_read).length;
 
-  const handleDismiss = (id: string) => {
-    dismissAlert(id);
+  const loadAlerts = useCallback(async () => {
+    const rows = await fetchAlerts();
+    setAlerts(rows as DbAlert[]);
+  }, []);
+
+  useEffect(() => {
+    loadAlerts();
+  }, [loadAlerts]);
+
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    const channel = supabase
+      .channel('notifications_alerts')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'alerts' },
+        (payload) => setAlerts(current => [payload.new as DbAlert, ...current])
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const handleDismiss = async (id: string) => {
+    await markAlertRead(id);
+    setAlerts(current => current.map(alert => (
+      alert.id === id ? { ...alert, is_read: true } : alert
+    )));
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadAlerts();
+    setRefreshing(false);
   };
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
-      {/* Header */}
       <View style={[styles.header, { backgroundColor: palette.background, borderBottomColor: palette.border }]}>
         <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
           <Ionicons name="chevron-back" size={24} color={palette.text} />
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: palette.text }]}>{t('notifications') || 'Notifications'}</Text>
-        <TouchableOpacity style={styles.clearBtn} onPress={clearAll}>
-          <Text style={styles.clearBtnText}>{t('clearAll') || 'Clear All'}</Text>
-        </TouchableOpacity>
+        <View style={styles.headerCenter}>
+          <Text style={[styles.headerTitle, { color: palette.text }]}>{t('notifications') || 'Notifications'}</Text>
+          {unreadCount > 0 ? <Text style={[styles.headerSub, { color: palette.textSecondary }]}>{unreadCount} unread</Text> : null}
+        </View>
+        <View style={styles.headerSpacer} />
       </View>
 
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={palette.primary} />}
+      >
         {active.length === 0 ? (
           <View style={styles.emptyContainer}>
             <View style={[styles.emptyIconContainer, { backgroundColor: palette.backgroundTertiary }]}>
               <Ionicons name="notifications-off-outline" size={48} color={palette.textTertiary} />
             </View>
-            <Text style={[styles.emptyTitle, { color: palette.text }]}>{t('noNotifications') || 'No notifications yet'}</Text>
+            <Text style={[styles.emptyTitle, { color: palette.text }]}>No alerts</Text>
             <Text style={[styles.emptySubtitle, { color: palette.textSecondary }]}>
-              {t('notificationsClear') || 'You\'re all caught up! No active alerts at this time.'}
+              No alert notifications have been recorded yet.
             </Text>
           </View>
         ) : (
-          active.map((alert, index) => {
-            const s = (SEVERITY_STYLE as any)[alert.severity] || SEVERITY_STYLE.warning;
-            const itemBg = isDark ? (alert.severity === 'error' ? '#450a0a' : '#451a03') : s.bg;
+          active.map((alert) => {
+            const s = SEVERITY_STYLE[alert.severity] || SEVERITY_STYLE.low;
+            const itemBg = isDark ? '#1f2937' : s.bg;
             
             return (
               <Animated.View 
@@ -64,7 +107,8 @@ export default function NotificationsScreen() {
                     backgroundColor: itemBg, 
                     borderColor: isDark ? 'transparent' : s.border,
                     borderLeftColor: s.color,
-                    borderLeftWidth: 4 
+                    borderLeftWidth: 4,
+                    opacity: alert.is_read ? 0.72 : 1,
                   }
                 ]}
               >
@@ -73,30 +117,28 @@ export default function NotificationsScreen() {
                     <Ionicons name={s.icon as any} size={20} color={s.color} />
                   </View>
                   <View style={styles.cardInfo}>
-                    <Text style={[styles.cardType, { color: s.color }]}>
-                      {alert.type === 'stuck_card' ? t('stuckCard') : alert.type.replace('_', ' ').toUpperCase()}
-                    </Text>
+                    <View style={styles.cardTitleRow}>
+                      {!alert.is_read ? <View style={[styles.unreadDot, { backgroundColor: s.color }]} /> : null}
+                      <Text style={[styles.cardType, { color: s.color }]}>
+                        {alert.title}
+                      </Text>
+                    </View>
                     <Text style={[styles.cardTime, { color: palette.textTertiary }]}>
-                      {new Date(alert.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {new Date(alert.created_at).toLocaleString()}
                     </Text>
                   </View>
-                  <TouchableOpacity onPress={() => handleDismiss(alert.id)} style={styles.closeBtn}>
-                    <Ionicons name="close" size={18} color={isDark ? palette.textSecondary : s.color} />
-                  </TouchableOpacity>
+                  {!alert.is_read ? (
+                    <TouchableOpacity onPress={() => handleDismiss(alert.id)} style={styles.closeBtn}>
+                      <Ionicons name="checkmark" size={18} color={isDark ? palette.textSecondary : s.color} />
+                    </TouchableOpacity>
+                  ) : null}
                 </View>
                 
-                <Text style={[styles.cardMsg, { color: isDark ? '#fecaca' : s.color }]}>
-                  {alert.message}
-                </Text>
-                
-                {alert.cardId && (
-                  <TouchableOpacity
-                    style={[styles.actionBtn, { backgroundColor: s.color }]}
-                    onPress={() => router.push(`/card/${alert.cardId}`)}
-                  >
-                    <Text style={styles.actionBtnText}>{t('viewCard')} →</Text>
-                  </TouchableOpacity>
-                )}
+                {alert.message ? (
+                  <Text style={[styles.cardMsg, { color: isDark ? palette.text : s.color }]}>
+                    {alert.message}
+                  </Text>
+                ) : null}
               </Animated.View>
             );
           })
@@ -114,9 +156,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   backBtn: { padding: 4 },
+  headerCenter: { alignItems: 'center' },
   headerTitle: { ...typography.bodyBold, fontSize: 18 },
-  clearBtn: { paddingHorizontal: 4 },
-  clearBtnText: { ...typography.small, color: colors.primary, fontWeight: '700' },
+  headerSub: { ...typography.tiny, marginTop: 2 },
+  headerSpacer: { width: 32 },
   scroll: { flex: 1 },
   scrollContent: { padding: spacing.lg, gap: spacing.md },
   notificationCard: {
@@ -126,32 +169,16 @@ const styles = StyleSheet.create({
     ...shadows.sm,
   },
   cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm },
-  iconBox: {
-    width: 36, height: 36, borderRadius: 18,
-    alignItems: 'center', justifyContent: 'center', marginRight: spacing.sm,
-  },
+  iconBox: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', marginRight: spacing.sm },
   cardInfo: { flex: 1 },
-  cardType: { ...typography.tiny, fontWeight: '800', letterSpacing: 0.5 },
+  cardTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  unreadDot: { width: 8, height: 8, borderRadius: 4 },
+  cardType: { ...typography.tiny, fontWeight: '800', letterSpacing: 0.5, textTransform: 'uppercase', flex: 1 },
   cardTime: { ...typography.tiny, marginTop: 1 },
   closeBtn: { padding: 4 },
-  cardMsg: { ...typography.body, fontWeight: '500', lineHeight: 20, marginBottom: spacing.md },
-  actionBtn: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: spacing.md,
-    paddingVertical: 8,
-    borderRadius: borderRadius.md,
-    ...shadows.xs,
-  },
-  actionBtnText: { ...typography.small, color: colors.white, fontWeight: '700' },
-  emptyContainer: {
-    alignItems: 'center', justifyContent: 'center',
-    paddingVertical: 100,
-  },
-  emptyIconContainer: {
-    width: 100, height: 100, borderRadius: 50,
-    alignItems: 'center', justifyContent: 'center',
-    marginBottom: spacing.lg,
-  },
+  cardMsg: { ...typography.body, fontWeight: '500', lineHeight: 20 },
+  emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 100 },
+  emptyIconContainer: { width: 100, height: 100, borderRadius: 50, alignItems: 'center', justifyContent: 'center', marginBottom: spacing.lg },
   emptyTitle: { ...typography.h3, marginBottom: spacing.xs },
   emptySubtitle: { ...typography.body, textAlign: 'center', paddingHorizontal: spacing.xl },
 });

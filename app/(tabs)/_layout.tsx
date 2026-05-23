@@ -61,13 +61,25 @@ export default function TabLayout() {
         tabBarInactiveTintColor: palette.textSecondary,
         tabBarStyle: {
           backgroundColor: palette.background,
-          borderTopWidth: 1,
-          borderTopColor: palette.border,
-          height: Platform.OS === 'ios' ? 88 : 64,
-          paddingBottom: Platform.OS === 'ios' ? 24 : 8,
-          paddingTop: 8,
+          borderTopWidth: 0,
+          height: Platform.OS === 'ios' ? 84 : 70,
+          paddingBottom: Platform.OS === 'ios' ? 22 : 10,
+          paddingTop: 10,
+          marginHorizontal: 14,
+          marginBottom: Platform.OS === 'ios' ? 10 : 8,
+          borderRadius: 18,
+          position: 'absolute',
+          shadowColor: '#000000',
+          shadowOpacity: 0.08,
+          shadowRadius: 14,
+          shadowOffset: { width: 0, height: 6 },
+          elevation: 8,
         },
-        tabBarLabelStyle: { fontSize: 11, fontWeight: '600' },
+        tabBarLabelStyle: { fontSize: 11, fontWeight: '700' },
+        tabBarItemStyle: { paddingTop: 2 },
+        sceneStyle: {
+          paddingBottom: Platform.OS === 'ios' ? 96 : 88,
+        },
         headerShown: false,
       }}
     >
@@ -137,9 +149,19 @@ export default function TabLayout() {
       <Tabs.Screen
         name="sensors"
         options={{
+          href: null,
           title: 'Sensors',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="hardware-chip" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="acquisition"
+        options={{
+          title: 'Acquisition',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="pulse" size={size} color={color} />
           ),
         }}
       />
@@ -172,7 +194,7 @@ const styles = StyleSheet.create({
     height: 18,
     paddingHorizontal: 4,
     borderRadius: 9,
-    backgroundColor: '#EF4444',
+    backgroundColor: '#DC2626',
     alignItems: 'center',
     justifyContent: 'center',
   },

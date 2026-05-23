@@ -184,4 +184,85 @@ export interface Comment {
   body: string;
   createdAt: string;
 }
+export interface SensorEvent {
+  id: number;                           // bigint → number
+  sensor_id: 'capteur1' | 'capteur2' | 'capteur3' | 'SYSTEM';
+  gpio_pin: number;
+  state: 'HIGH' | 'LOW' | 'SCENARIO_START';
+  scenario: string;
+  raw_value: number;
+  counter: number;
+  created_at: string;
+  recorded_at: string;
+}
+
+export interface SensorState {
+  sensor_id: 'capteur1' | 'capteur2' | 'capteur3';
+  gpio_pin?: number;
+  state: 'HIGH' | 'LOW';
+  counter: number;
+  recorded_at: string;
+}
+
+export interface EtatCapteur {
+  id: number;
+  timestamp?: string;
+  date_temps: string | null;
+  capteur1: number;
+  capteur2: number;
+  capteur3: number;
+}
+
+export interface Configuration {
+  id: number;
+  nb_cartes_attendues: number;
+  gpio_capteur1: number;
+  gpio_capteur2: number;
+  gpio_capteur3: number;
+  machine_name: string;
+  cycle_time_seconds: number;
+  loss_threshold: number;
+  updated_at: string;
+  serial_port: string;
+}
+
+export interface PertesTableRow {
+  id: number;
+  date_temps: string;
+  machine: string | null;
+  capteur_from: string | null;
+  capteur_to: string | null;
+  nb_cartes_perdues: number;
+  pertes_totale: number;
+}
+
+export interface TRGRow {
+  id: number;
+  date_temps: string;
+  cartes_attendues: number;
+  cartes_produites: number;
+  cartes_bonnes: number;
+  trg_pourcentage: number;
+}
+
+export interface TRSRow {
+  id: number;
+  date_temps: string;
+  cartes_attendues: number;
+  cartes_produites: number;
+  cartes_bonnes: number;
+  trs_pourcentage: number;
+}
+
+export interface Alert {
+  id: string;
+  type: string;
+  title: string;
+  message: string | null;
+  severity: 'low' | 'medium' | 'high';
+  is_read: boolean;
+  related_card_id: string | null;
+  created_at: string;
+}
+
 export * from './production';

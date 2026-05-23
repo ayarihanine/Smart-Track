@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
-  Alert, TextInput, Switch, Image, ActivityIndicator,
+  Alert, Switch, Image, ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,11 +12,8 @@ import { useAuthStore } from '@/store/authStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
-import { getCards } from '@/lib/api';
 import { UserRole } from '@/types';
 import * as ImagePicker from 'expo-image-picker';
-import * as Print from 'expo-print';
-import * as Sharing from 'expo-sharing';
 import { getSupabaseClient } from '@/lib/supabase';
 
 const ROLE_COLORS: Record<UserRole, string> = {
@@ -99,8 +96,6 @@ export default function ProfileScreen() {
   const { t } = useTranslation();
   const { palette, isDark } = useTheme();
 
-  const [generatingReport, setGeneratingReport] = useState(false);
-
   const roleColor = ROLE_COLORS[user?.role || 'operator'];
   const roleIcon = ROLE_ICONS[user?.role || 'operator'];
 
@@ -141,104 +136,6 @@ export default function ProfileScreen() {
     }
   }
   
-  async function handleGenerateReport() {
-    if (generatingReport) return;
-    setGeneratingReport(true);
-    try {
-      const cards = await getCards();
-      const now = new Date().toLocaleString();
-      
-      const html = `
-        <html>
-          <head>
-            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no" />
-            <style>
-              body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; padding: 40px; color: #333; }
-              .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #2563eb; padding-bottom: 20px; margin-bottom: 30px; }
-              .logo { font-size: 24px; font-weight: bold; color: #2563eb; }
-              .report-title { font-size: 28px; margin: 0; }
-              .meta { font-size: 12px; color: #666; margin-top: 5px; }
-              .stats { display: flex; gap: 20px; margin-bottom: 30px; }
-              .stat-box { flex: 1; background: #f8fafc; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0; }
-              .stat-label { font-size: 10px; text-transform: uppercase; color: #64748b; font-weight: bold; }
-              .stat-value { font-size: 20px; font-weight: bold; color: #1e293b; }
-              table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-              th { text-align: left; background: #f1f5f9; padding: 12px; font-size: 12px; border-bottom: 2px solid #e2e8f0; }
-              td { padding: 12px; font-size: 11px; border-bottom: 1px solid #f1f5f9; }
-              .status-badge { padding: 2px 8px; border-radius: 10px; font-size: 9px; font-weight: bold; text-transform: uppercase; }
-              .completed { background: #dcfce7; color: #166534; }
-              .in-progress { background: #dbeafe; color: #1e40af; }
-              .footer { margin-top: 50px; text-align: center; font-size: 10px; color: #94a3b8; border-top: 1px solid #f1f5f9; padding-top: 20px; }
-            </style>
-          </head>
-          <body>
-            <div class="header">
-              <div>
-                <h1 class="report-title">Production Report</h1>
-                <div class="meta">Generated on ${now}</div>
-              </div>
-              <div class="logo">CARD-TRACK</div>
-            </div>
-
-            <div class="stats">
-              <div class="stat-box">
-                <div class="stat-label">Total Cards</div>
-                <div class="stat-value">${cards.length}</div>
-              </div>
-              <div class="stat-box">
-                <div class="stat-label">Completed</div>
-                <div class="stat-value">${cards.filter(c => c.status === 'completed').length}</div>
-              </div>
-              <div class="stat-box">
-                <div class="stat-label">In Progress</div>
-                <div class="stat-value">${cards.filter(c => c.status === 'in_progress').length}</div>
-              </div>
-            </div>
-
-            <table>
-              <thead>
-                <tr>
-                  <th>Card ID</th>
-                  <th>Product</th>
-                  <th>Stage</th>
-                  <th>Status</th>
-                  <th>Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${cards.map(c => `
-                  <tr>
-                    <td><strong>${c.cardId}</strong></td>
-                    <td>${c.productName || 'N/A'}</td>
-                    <td>${c.currentStage || 'Unknown'}</td>
-                    <td>
-                      <span class="status-badge ${c.status === 'completed' ? 'completed' : 'in-progress'}">
-                        ${c.status}
-                      </span>
-                    </td>
-                    <td>${new Date(c.updatedAt).toLocaleDateString()}</td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-
-            <div class="footer">
-              &copy; ${new Date().getFullYear()} Card-Track Production Monitoring System. All rights reserved.
-            </div>
-          </body>
-        </html>
-      `;
-
-      const { uri } = await Print.printToFileAsync({ html });
-      await Sharing.shareAsync(uri, { UTI: '.pdf', mimeType: 'application/pdf' });
-    } catch (error) {
-      console.error('PDF Error:', error);
-      Alert.alert(t('error'), 'Could not generate or share PDF report');
-    } finally {
-      setGeneratingReport(false);
-    }
-  }
-
   function handleSignOut() {
     Alert.alert(
       t('signOut'),

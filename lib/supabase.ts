@@ -92,3 +92,18 @@ export function configureSupabaseAuthAutoRefresh() {
     appStateSubscription = null;
   };
 }
+
+function requireSupabaseClient(): SupabaseClient {
+  const client = getSupabaseClient();
+  if (!client) {
+    throw new Error('Supabase not configured');
+  }
+  return client;
+}
+
+export const supabase = {
+  from: (...args: Parameters<SupabaseClient['from']>) => requireSupabaseClient().from(...args),
+  channel: (...args: Parameters<SupabaseClient['channel']>) => requireSupabaseClient().channel(...args),
+  removeChannel: (channel: Parameters<SupabaseClient['removeChannel']>[0]) =>
+    requireSupabaseClient().removeChannel(channel),
+};

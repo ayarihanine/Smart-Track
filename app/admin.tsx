@@ -10,6 +10,7 @@ import { UserProfile } from '@/types';
 import { useRoleGuard } from '@/hooks/useRoleGuard';
 
 type SortOption = 'name' | 'role' | 'newest';
+const ROLE_ORDER: Record<string, number> = { admin: 0, supervisor: 1, operator: 2 };
 
 export default function AdminPanelScreen() {
   useRoleGuard(['admin']);
@@ -62,8 +63,6 @@ export default function AdminPanelScreen() {
     if (role === 'supervisor') return '#2563EB'; // Blue
     return '#10B981'; // Green
   };
-
-  const ROLE_ORDER: Record<string, number> = { admin: 0, supervisor: 1, operator: 2 };
 
   const sortedUsers = useMemo(() => {
     const sorted = [...users];

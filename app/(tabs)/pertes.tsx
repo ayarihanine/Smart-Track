@@ -9,18 +9,18 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 
-import { borderRadius, shadows, spacing, typography } from '@/constants/design';
+import { borderRadius, spacing, typography } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
 import { useTranslation } from '@/hooks/useTranslation';
-import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { getLosses } from '@/lib/api';
 import { PertesTable } from '@/types/production';
 import { getSupabaseClient } from '@/lib/supabase';
 import { useAlertsStore } from '@/store/alertsStore';
+import { useTodaysLosses } from '@/hooks/useTodaysLosses';
 
 type LossesFilter = 'today' | 'week' | 'month';
 
@@ -158,6 +158,14 @@ export default function LossesScreen() {
   const [losses, setLosses] = useState<PertesTable[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
+  const {
+    totalCost,
+    totalCards,
+    zone1,
+    zone2,
+    loading: lossesLoading,
+  } = useTodaysLosses();
+
   // Active batch and quality threshold state
   const [activeBatch, setActiveBatch] = useState<any>(null);
   const [lossThreshold, setLossThreshold] = useState<number>(0.05); // default 5%
@@ -247,17 +255,20 @@ export default function LossesScreen() {
     return losses.filter((item) => new Date(item.date_temps) >= start);
   }, [activeBatch, filter, losses]);
 
-  const totals = useMemo(
-    () =>
-      filteredLosses.reduce(
-        (result, item) => ({
-          cards: result.cards + item.nb_cartes_perdues,
-          cost: result.cost + item.pertes_totale,
-        }),
-        { cards: 0, cost: 0 }
-      ),
-    [filteredLosses]
-  );
+  const totals = useMemo(() => {
+    if (!activeBatch) {
+      return { cards: totalCards, cost: totalCost, zone1, zone2 };
+    }
+    return filteredLosses.reduce(
+      (result, item) => ({
+        cards: result.cards + item.nb_cartes_perdues,
+        cost: result.cost + item.pertes_totale,
+        zone1: result.zone1,
+        zone2: result.zone2,
+      }),
+      { cards: 0, cost: 0, zone1: 0, zone2: 0 }
+    );
+  }, [activeBatch, filteredLosses, totalCards, totalCost, zone1, zone2]);
 
   const normalizedLossThreshold = useMemo(
     () => (lossThreshold > 1 ? lossThreshold / 100 : lossThreshold),
@@ -298,6 +309,13 @@ export default function LossesScreen() {
       {/* Theme Adaptive Hero Header */}
       <Animated.View entering={FadeInUp.duration(600).springify()} style={[styles.heroBanner, { backgroundColor: palette.background, shadowColor: isDark ? '#EF4444' : palette.border, borderBottomColor: palette.border, borderBottomWidth: 1 }]}>
         <SafeAreaView edges={['top']} style={styles.heroSafeArea}>
+          <View style={styles.heroTopNav}>
+            <TouchableOpacity style={[styles.heroBackBtn, { borderColor: palette.border }]} onPress={() => router.push('/(tabs)')}>
+              <Ionicons name="arrow-back" size={16} color={palette.text} />
+            </TouchableOpacity>
+            <Text style={[styles.heroNavTitle, { color: palette.text }]}>{t('lossesTab')}</Text>
+            <View style={styles.heroBackBtn} />
+          </View>
           <View style={styles.heroContent}>
             <View style={styles.heroTitleRow}>
               <View>
@@ -312,7 +330,9 @@ export default function LossesScreen() {
               </View>
               <View style={[styles.heroBadge, { backgroundColor: isDark ? 'rgba(239, 68, 68, 0.15)' : 'rgba(239, 68, 68, 0.1)', borderColor: isDark ? 'rgba(239, 68, 68, 0.3)' : 'rgba(239, 68, 68, 0.2)' }]}>
                 <Ionicons name="trending-down" size={14} color={ERROR_COLOR} />
-                <Text style={[styles.heroBadgeText, { color: ERROR_COLOR }]}>{totals.cards} lost</Text>
+                <Text style={[styles.heroBadgeText, { color: ERROR_COLOR }]}>
+                  {activeBatch ? `${totals.cards} lost` : `${totals.cards} ${t('lostCardsLabel')} → ${totals.cost.toFixed(3)} TND`}
+                </Text>
               </View>
             </View>
             
@@ -322,13 +342,32 @@ export default function LossesScreen() {
                   {activeBatch ? 'Waste quantity' : t('totalFinancialCost')}
                 </Text>
                 <View style={styles.heroStatValueRow}>
-                  <Text style={[styles.heroStatValue, { color: palette.text }]}>
-                    {activeBatch ? totals.cards : totals.cost.toFixed(3)}
-                  </Text>
-                  <Text style={[styles.heroStatCurrency, { color: ERROR_COLOR }]}>
-                    {activeBatch ? 'cards' : 'TND'}
-                  </Text>
+                  {lossesLoading && !activeBatch ? (
+                    <Text style={[styles.heroStatValue, { color: palette.textSecondary }]}>...</Text>
+                  ) : (
+                    <>
+                      <Text style={[styles.heroStatValue, { color: palette.text }]}>
+                        {activeBatch ? totals.cards : `${totals.cost.toFixed(3)}`}
+                      </Text>
+                      <Text style={[styles.heroStatCurrency, { color: ERROR_COLOR }]}>
+                        {activeBatch ? 'cards' : 'TND'}
+                      </Text>
+                    </>
+                  )}
                 </View>
+                {!activeBatch && !lossesLoading ? (
+                  <>
+                    <Text style={[styles.thresholdLabel, { color: palette.textSecondary }]}>
+                      {totalCards} lost cards
+                    </Text>
+                    <Text style={[styles.thresholdLabel, { color: palette.textTertiary }]}>
+                      Zone 1 (Entry→Middle): {zone1}
+                    </Text>
+                    <Text style={[styles.thresholdLabel, { color: palette.textTertiary }]}>
+                      Zone 2 (Middle→Exit): {zone2}
+                    </Text>
+                  </>
+                ) : null}
               </View>
 
               {activeBatch && (
@@ -369,7 +408,11 @@ export default function LossesScreen() {
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
         refreshControl={
-          <RefreshControl refreshing={isLoading} onRefresh={fetchLosses} tintColor={palette.primary} />
+          <RefreshControl
+            refreshing={isLoading || lossesLoading}
+            onRefresh={() => { fetchLosses(); }}
+            tintColor={palette.primary}
+          />
         }
         ListEmptyComponent={
           isLoading ? null : (
@@ -404,6 +447,25 @@ const styles = StyleSheet.create({
 
   heroSafeArea: {
     // container inside the banner
+  },
+  heroTopNav: {
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  heroBackBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroNavTitle: {
+    ...typography.bodyBold,
+    fontSize: 16,
   },
   heroContent: {
     paddingHorizontal: spacing.xl,

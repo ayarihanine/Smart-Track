@@ -19,14 +19,13 @@ import { borderRadius, shadows, spacing, typography } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useAuthStore } from '@/store/authStore';
-import { getConfiguration, updateConfiguration } from '@/lib/api';
+import { fetchConfiguration } from '@/lib/api';
+import { getSupabaseClient } from '@/lib/supabase';
 import { Configuration } from '@/types/production';
-
-const WARNING_COLOR = '#F59E0B';
 
 type ConfigurationForm = Pick<
   Configuration,
-  'nb_cartes_attendues' | 'machine_name' | 'cycle_time_seconds' | 'gpio_capteur1' | 'gpio_capteur2' | 'gpio_capteur3'
+  'nb_cartes_attendues' | 'machine_name' | 'cycle_time_seconds'
 > & {
   loss_threshold: number;
 };
@@ -35,9 +34,6 @@ const defaultForm: ConfigurationForm = {
   nb_cartes_attendues: 0,
   machine_name: '',
   cycle_time_seconds: 0,
-  gpio_capteur1: 0,
-  gpio_capteur2: 0,
-  gpio_capteur3: 0,
   loss_threshold: 0,
 };
 
@@ -105,16 +101,13 @@ export default function ConfigurationScreen() {
 
     const loadConfiguration = async () => {
       setLoading(true);
-      const configuration = await getConfiguration();
+      const configuration = await fetchConfiguration();
 
       if (mounted && configuration) {
         setForm({
           nb_cartes_attendues: configuration.nb_cartes_attendues,
           machine_name: configuration.machine_name,
           cycle_time_seconds: configuration.cycle_time_seconds,
-          gpio_capteur1: configuration.gpio_capteur1,
-          gpio_capteur2: configuration.gpio_capteur2,
-          gpio_capteur3: configuration.gpio_capteur3,
           loss_threshold: configuration.loss_threshold,
         });
       }
@@ -138,11 +131,17 @@ export default function ConfigurationScreen() {
   const saveConfiguration = async () => {
     setSaving(true);
 
-    const updated = await updateConfiguration(form);
+    const supabase = getSupabaseClient();
+    const { error } = supabase
+      ? await supabase
+          .from('configuration')
+          .update({ ...form, updated_at: new Date().toISOString() })
+          .eq('id', 1)
+      : { error: new Error('Supabase is not configured') };
 
     setSaving(false);
 
-    if (updated) {
+    if (!error) {
       Alert.alert(t('success'), t('configurationSaved'));
       return;
     }
@@ -177,7 +176,7 @@ export default function ConfigurationScreen() {
             <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('productionSettingsSection')}</Text>
 
             <ConfigInput
-              label={t('expectedCardsLabel')}
+              label="Cards expected per batch"
               value={String(form.nb_cartes_attendues || '')}
               onChangeText={(value) => setForm((current) => ({ ...current, nb_cartes_attendues: Number(value.replace(/[^0-9]/g, '')) || 0 }))}
               placeholder={t('expectedCardsPlaceholder')}
@@ -186,7 +185,7 @@ export default function ConfigurationScreen() {
             />
 
             <ConfigInput
-              label={t('machineNameLabel')}
+              label="Machine name"
               value={form.machine_name}
               onChangeText={(value) => setForm((current) => ({ ...current, machine_name: value }))}
               placeholder={t('machineNamePlaceholder')}
@@ -194,49 +193,21 @@ export default function ConfigurationScreen() {
             />
 
             <ConfigInput
-              label={t('cycleTimeSecondsLabel')}
+              label="Cycle time (seconds)"
               value={String(form.cycle_time_seconds || '')}
               onChangeText={(value) => setForm((current) => ({ ...current, cycle_time_seconds: Number(value.replace(/[^0-9]/g, '')) || 0 }))}
               placeholder={t('cycleTimePlaceholder')}
               keyboardType="number-pad"
               palette={palette}
             />
-          </View>
-
-          <View style={[styles.sectionCard, { backgroundColor: palette.background, borderColor: palette.border }]}>
-            <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('gpioSectionTitle')}</Text>
-
             <ConfigInput
-              label={t('gpioSensor1Label')}
-              value={String(form.gpio_capteur1 || '')}
-              onChangeText={(value) => setForm((current) => ({ ...current, gpio_capteur1: Number(value.replace(/[^0-9]/g, '')) || 0 }))}
-              placeholder={t('gpioSensor1Placeholder')}
+              label="Loss alert threshold"
+              value={String(form.loss_threshold || '')}
+              onChangeText={(value) => setForm((current) => ({ ...current, loss_threshold: Number(value.replace(/[^0-9]/g, '')) || 0 }))}
+              placeholder="1"
               keyboardType="number-pad"
               palette={palette}
             />
-
-            <ConfigInput
-              label={t('gpioSensor2Label')}
-              value={String(form.gpio_capteur2 || '')}
-              onChangeText={(value) => setForm((current) => ({ ...current, gpio_capteur2: Number(value.replace(/[^0-9]/g, '')) || 0 }))}
-              placeholder={t('gpioSensor2Placeholder')}
-              keyboardType="number-pad"
-              palette={palette}
-            />
-
-            <ConfigInput
-              label={t('gpioSensor3Label')}
-              value={String(form.gpio_capteur3 || '')}
-              onChangeText={(value) => setForm((current) => ({ ...current, gpio_capteur3: Number(value.replace(/[^0-9]/g, '')) || 0 }))}
-              placeholder={t('gpioSensor3Placeholder')}
-              keyboardType="number-pad"
-              palette={palette}
-            />
-
-            <View style={[styles.warningBox, { backgroundColor: WARNING_COLOR + '14', borderColor: WARNING_COLOR + '30' }]}>
-              <Ionicons name="warning" size={18} color={WARNING_COLOR} />
-              <Text style={[styles.warningText, { color: '#92400E' }]}>{t('gpioWarning')}</Text>
-            </View>
           </View>
 
           <TouchableOpacity

@@ -2,13 +2,11 @@ import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Animated, Easing, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useOfflineStore } from '@/store/offlineStore';
-import { useTheme } from './ThemeProvider';
 import { useTranslation } from '@/hooks/useTranslation';
 import { spacing, borderRadius, typography, shadows } from '@/constants/design';
 
 export function SyncBanner() {
   const { pendingScans, isSyncing, syncPending } = useOfflineStore();
-  const { palette } = useTheme();
   const { t } = useTranslation();
   
   const count = pendingScans.length;
@@ -30,7 +28,7 @@ export function SyncBanner() {
         useNativeDriver: true,
       }).start();
     }
-  }, [count, isSyncing]);
+  }, [count, isSyncing, slideAnim]);
 
   useEffect(() => {
     if (isSyncing) {

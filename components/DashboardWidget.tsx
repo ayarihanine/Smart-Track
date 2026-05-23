@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
+import { spacing, typography, borderRadius, shadows } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
 
 interface DashboardWidgetProps {

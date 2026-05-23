@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList,
-  Modal, Pressable, Alert, Animated, RefreshControl
+  Modal, Pressable, Alert, Animated, RefreshControl, ActivityIndicator
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -34,7 +34,7 @@ function CardRow({
   stages: any[];
 }) {
   const { isDark } = useTheme();
-  const stageName = card.currentStage?.split(':')[1]?.trim() || card.currentStage || 'Unknown';
+  const stageName = card.currentStage?.split(':')[1]?.trim() || card.currentStage || '';
   const stageColor = stages.find(s => stageName.includes(s.value))?.color || '#6B7280';
   const isCompleted = card.status === 'completed';
 
@@ -56,18 +56,27 @@ function CardRow({
           
           <View style={styles.cardMainInfo}>
             <View style={styles.cardIdRow}>
-              <Text style={[styles.cardIdText, { color: palette.text }]}>{card.cardId}</Text>
-              <View style={[styles.stageBadge, { backgroundColor: stageColor + '12', borderColor: stageColor + '30' }]}>
-                <Text style={[styles.stageBadgeText, { color: stageColor }]}>{stageName}</Text>
-              </View>
+              <Text style={[styles.cardIdText, { color: palette.text }]} numberOfLines={1}>{card.cardId}</Text>
+              {stageName ? (
+                <View style={[styles.stageBadge, { backgroundColor: stageColor + '12', borderColor: stageColor + '30' }]}>
+                  <Text style={[styles.stageBadgeText, { color: stageColor }]} numberOfLines={1}>{stageName}</Text>
+                </View>
+              ) : null}
             </View>
             <Text style={[styles.cardTimeText, { color: palette.textTertiary }]}>
               {formatDate(card.updatedAt)} · {formatTime(card.updatedAt)}
             </Text>
           </View>
 
-          <TouchableOpacity style={styles.trashBtn} onPress={onDelete} activeOpacity={0.6}>
-            <View style={[styles.trashIconBox, { backgroundColor: isDark ? '#450a0a' : '#FEF2F2' }]}>
+          <TouchableOpacity
+            style={styles.trashBtn}
+            onPress={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            activeOpacity={0.6}
+          >
+            <View style={[styles.trashIconBox, { backgroundColor: isDark ? '#450a0a' : '#FEF2F2' }]}> 
               <Ionicons name="trash-outline" size={18} color="#EF4444" />
             </View>
           </TouchableOpacity>
@@ -282,7 +291,9 @@ export default function HistoryScreen() {
         >
           <View style={styles.filterBtnLeft}>
             <Ionicons name="options-outline" size={18} color={palette.primary} />
-            <Text style={[styles.filterBtnText, { color: palette.text }]}>{t('filterSort' as any)}</Text>
+            <Text style={[styles.filterBtnText, { color: palette.text }]}>
+              {(filters.stages?.length || 0) > 0 ? `${filters.stages?.length} stage filters` : (t('filterSort' as any) || 'Filter & Sort')}
+            </Text>
           </View>
           {(filters.stages?.length || 0) > 0 && (
             <View style={[styles.filterBadge, { backgroundColor: palette.primary }]}>
@@ -294,6 +305,11 @@ export default function HistoryScreen() {
       </View>
 
       {/* List */}
+      {isLoading ? (
+        <View style={styles.initialLoadingWrap}>
+          <ActivityIndicator size="large" color={palette.primary} />
+        </View>
+      ) : (
       <FlatList
         data={cards}
         keyExtractor={item => item.id}
@@ -301,7 +317,7 @@ export default function HistoryScreen() {
           <CardRow 
             card={item} 
             onPress={() => router.push(`/card/${item.cardId}`)} 
-            onDelete={() => handleDelete(item.cardId)}
+            onDelete={() => handleDelete(item.id)}
             palette={palette}
             t={t}
             formatDate={formatDate}
@@ -335,6 +351,7 @@ export default function HistoryScreen() {
         }
         contentContainerStyle={styles.listContent}
       />
+      )}
 
       {/* Filter Modal */}
       <Modal visible={showFilter} animationType="slide" transparent>
@@ -449,14 +466,19 @@ const styles = StyleSheet.create({
     marginHorizontal: spacing.xs,
   },
   filterBadgeText: { ...typography.tiny, color: colors.white, fontWeight: '800' },
-  listContent: { paddingHorizontal: spacing.lg, paddingBottom: spacing.xl },
+  initialLoadingWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  listContent: { paddingHorizontal: spacing.lg, paddingBottom: spacing.xxxl },
   separator: { height: spacing.xs },
   cardRowWrapper: { marginBottom: spacing.xs },
   cardItem: {
     borderRadius: borderRadius.xl,
     overflow: 'hidden',
     borderWidth: 1,
-    minHeight: 80,
+    minHeight: 88,
     ...shadows.sm,
   },
   cardItemInner: {
@@ -480,17 +502,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: spacing.sm,
     marginBottom: 2,
   },
   cardIdText: {
     ...typography.bodyBold,
-    fontSize: 16,
+    fontSize: 17,
+    flex: 1,
   },
   stageBadge: {
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 6,
     borderWidth: 1,
+    maxWidth: 120,
   },
   stageBadgeText: {
     ...typography.tiny,
@@ -499,6 +524,7 @@ const styles = StyleSheet.create({
   },
   cardTimeText: {
     ...typography.small,
+    fontWeight: '600',
   },
   trashBtn: {
     paddingLeft: spacing.sm,

@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
-  RefreshControl, Animated, Image, Modal, Alert, Pressable,
+  RefreshControl, Animated, Image, Modal, Alert,
 } from 'react-native';
 import AnimatedReanimated, {
   useSharedValue,
@@ -20,11 +20,11 @@ import { colors, spacing, typography, borderRadius, shadows } from '@/constants/
 import { useAuthStore } from '@/store/authStore';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
-import { getCards, getAnalytics, deleteCard } from '@/lib/api';
+import { fetchAlerts, getCards, getAnalytics, deleteCard } from '@/lib/api';
 import { getSupabaseClient } from '@/lib/supabase';
 import { ElectronicCard, UserRole } from '@/types';
 import { SearchModal } from '@/components/SearchModal';
-import { useAlertsStore } from '@/store/alertsStore';
+import { getActiveElapsedMs, useAlertsStore } from '@/store/alertsStore';
 import { useSettingsStore } from '@/store/settingsStore';
 
 // Using palette-based colors for roles would be tricky since it's static,
@@ -78,13 +78,15 @@ function CardListItem({ card, onPress, onDelete, palette, primaryColor }: { card
         
         <View style={styles.cardMainInfo}>
           <View style={styles.cardIdRow}>
-            <Text style={[styles.cardIdText, { color: palette.text }]}>{card.cardId}</Text>
-            <View style={[styles.stageBadge, { backgroundColor: stageColor + '12', borderColor: stageColor + '30' }]}>
-              <Text style={[styles.stageBadgeText, { color: stageColor }]}>{stageName}</Text>
-            </View>
+            <Text style={[styles.cardIdText, { color: palette.text }]} numberOfLines={1}>{card.cardId}</Text>
+            {stageName ? (
+              <View style={[styles.stageBadge, { backgroundColor: stageColor + '12', borderColor: stageColor + '30' }]}>
+                <Text style={[styles.stageBadgeText, { color: stageColor }]} numberOfLines={1}>{stageName}</Text>
+              </View>
+            ) : null}
           </View>
-          <Text style={[styles.cardTimeText, { color: palette.textTertiary }]}>
-             <Ionicons name="location-outline" size={12} color={palette.textTertiary} /> {card.currentLocation} · {getTimeAgo(card.updatedAt)}
+          <Text style={[styles.cardTimeText, { color: palette.textTertiary }]}> 
+             <Ionicons name="location-outline" size={12} color={palette.textTertiary} /> {card.currentLocation ? `${card.currentLocation} · ` : ''}{getTimeAgo(card.updatedAt)}
           </Text>
         </View>
 
@@ -96,7 +98,7 @@ function CardListItem({ card, onPress, onDelete, palette, primaryColor }: { card
               onDelete();
             }}
           >
-            <Ionicons name="trash-outline" size={18} color={palette.textDisabled} />
+            <Ionicons name="trash-outline" size={18} color="#DC2626" />
           </TouchableOpacity>
         )}
         {!onDelete && <Ionicons name="chevron-forward" size={18} color={palette.textDisabled} />}
@@ -144,8 +146,8 @@ export default function HomeScreen() {
   const scrollY = useRef(new Animated.Value(0)).current;
   const [searchOpen, setSearchOpen] = useState(false);
   const [isMainMenuVisible, setMainMenuVisible] = useState(false);
-  const { alerts, checkStuckCards } = useAlertsStore();
-  const unreadAlertsCount = alerts.filter(a => !a.dismissed).length;
+  const { checkStuckCards } = useAlertsStore();
+  const [unreadAlertsCount, setUnreadAlertsCount] = useState(0);
   const stuckThreshold = useSettingsStore(s => s.stuckCardThresholdHours);
 
   const [cards, setCards] = useState<ElectronicCard[]>([]);
@@ -164,6 +166,14 @@ export default function HomeScreen() {
 
   useEffect(() => {
     fetchCards();
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    fetchAlerts(true).then(rows => {
+      if (mounted) setUnreadAlertsCount(rows.length);
+    });
+    return () => { mounted = false; };
   }, []);
 
   useQuery({
@@ -187,6 +197,17 @@ export default function HomeScreen() {
         },
         () => {
           fetchCards();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'alerts',
+        },
+        () => {
+          setUnreadAlertsCount(count => count + 1);
         }
       )
       .subscribe();
@@ -218,12 +239,12 @@ export default function HomeScreen() {
     }
   }, [cards, stuckThreshold, checkStuckCards]);
 
-  const thresholdMs = Math.max(0.1, stuckThreshold) * 60 * 60 * 1000;
-  const maxThresholdMs = 7 * 24 * 60 * 60 * 1000; // 7 days maximum
+  const thresholdMs = Math.max(36, stuckThreshold) * 60 * 60 * 1000;
   
   const delayedCards = (cards || []).filter(c => {
-    const timeInactive = Date.now() - new Date(c.updatedAt).getTime();
-    return c.status !== 'completed' && timeInactive > thresholdMs && timeInactive < maxThresholdMs;
+    const referenceTime = c.stageEnteredAt || c.updatedAt;
+    const activeElapsedMs = getActiveElapsedMs(referenceTime, 8, 17);
+    return c.status !== 'completed' && activeElapsedMs > thresholdMs;
   }).sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
 
   const headerOpacity = scrollY.interpolate({ inputRange: [0, 60], outputRange: [1, 0.95], extrapolate: 'clamp' });
@@ -261,6 +282,7 @@ export default function HomeScreen() {
     <SafeAreaView style={[styles.container, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
       <Animated.ScrollView
         style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
         scrollEventThrottle={16}
@@ -360,7 +382,7 @@ export default function HomeScreen() {
 
 
             {(user?.role === 'supervisor' || user?.role === 'admin') && (
-              <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/activity-feed' as any)} activeOpacity={0.8}>
+              <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/activity-feed' as never)} activeOpacity={0.8}>
                 <AnimatedIcon index={1}>
                   <LinearGradient
                     colors={isDark ? ['#059669', '#065f46'] : ['#D1FAE5', '#A7F3D0']}
@@ -442,12 +464,13 @@ export default function HomeScreen() {
               {t('stuckFor')} {stuckThreshold}h
             </Text>
             {delayedCards.map(card => {
-              const hoursStuck = Math.floor((Date.now() - new Date(card.updatedAt).getTime()) / (1000 * 60 * 60));
+              const hoursStuck = Math.max(1, Math.floor(getActiveElapsedMs(card.stageEnteredAt || card.updatedAt, 8, 17) / (1000 * 60 * 60)));
               return (
                 <View key={card.id} style={{ position: 'relative' }}>
                   <CardListItem
                     card={card}
                     onPress={() => router.push(`/card/${card.cardId}`)}
+                    onDelete={() => handleDelete(card.id)}
                     palette={palette}
                   />
                   <View style={[styles.stuckBadge, { backgroundColor: '#FEE2E2', borderColor: '#EF4444' }]}>
@@ -506,42 +529,6 @@ export default function HomeScreen() {
                 style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
                 onPress={() => {
                   setMainMenuVisible(false);
-                  router.push('/smart-optimization' as any);
-                }}
-              >
-                <View style={[styles.sheetActionIcon, { backgroundColor: '#F5F3FF' }]}>
-                  <Ionicons name="sparkles" size={20} color="#8B5CF6" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('smartOptimization') || 'Smart Optimization'}</Text>
-                  <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>{t('smartOptimizationDesc') || 'AI production insights'}</Text>
-                </View>
-                <View style={styles.newBadge}><Text style={styles.newBadgeText}>NEW</Text></View>
-              </TouchableOpacity>
-
-
-
-              <TouchableOpacity
-                style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
-                onPress={() => {
-                  setMainMenuVisible(false);
-                  router.push('/issues' as any);
-                }}
-              >
-                <View style={[styles.sheetActionIcon, { backgroundColor: '#F0F9FF' }]}>
-                  <Ionicons name="chatbubbles" size={20} color="#0EA5E9" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('issuesAndTasks') || 'Issues & Tasks'}</Text>
-                  <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>{t('collaborationSubtitle') || 'Team collaboration hub'}</Text>
-                </View>
-                <View style={styles.newBadge}><Text style={styles.newBadgeText}>NEW</Text></View>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
-                onPress={() => {
-                  setMainMenuVisible(false);
                   router.push('/(tabs)/history');
                 }}
               >
@@ -591,7 +578,7 @@ export default function HomeScreen() {
                 style={[styles.sheetActionBtn, { borderBottomWidth: 0 }]}
                 onPress={() => {
                   setMainMenuVisible(false);
-                  router.push('/settings');
+                  router.push('/(tabs)/settings');
                 }}
               >
                 <View style={[styles.sheetActionIcon, { backgroundColor: '#F3F4F6' }]}>
@@ -611,6 +598,7 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   scroll: { flex: 1 },
+  scrollContent: { paddingBottom: spacing.xxxl },
   header: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
@@ -687,7 +675,15 @@ const styles = StyleSheet.create({
   statusBannerText: { flex: 1 },
   statusBannerTitle: { ...typography.captionBold },
   statusBannerSub: { ...typography.small },
-  cardMoreBtn: { padding: 4, marginLeft: spacing.sm },
+  cardMoreBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    marginLeft: spacing.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FEE2E2',
+  },
   modalOverlay: {
     flex: 1, backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'flex-end',
@@ -718,7 +714,7 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.xl,
     overflow: 'hidden',
     borderWidth: 1,
-    minHeight: 80,
+    minHeight: 88,
     marginBottom: spacing.sm,
     ...shadows.sm,
   },
@@ -743,17 +739,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: spacing.sm,
     marginBottom: 2,
   },
   cardIdText: {
     ...typography.bodyBold,
-    fontSize: 16,
+    fontSize: 17,
+    flex: 1,
   },
   stageBadge: {
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 6,
     borderWidth: 1,
+    maxWidth: 120,
   },
   stageBadgeText: {
     ...typography.tiny,
@@ -762,6 +761,7 @@ const styles = StyleSheet.create({
   },
   cardTimeText: {
     ...typography.small,
+    fontWeight: '600',
   },
   empty: { alignItems: 'center', paddingVertical: spacing.xl, gap: spacing.sm },
   emptyText: { ...typography.body },

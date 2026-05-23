@@ -9,18 +9,15 @@ import {
   View,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { 
   useAnimatedProps, 
   useSharedValue, 
   withTiming, 
   useAnimatedStyle,
-  interpolateColor,
   withSpring,
   withRepeat
 } from 'react-native-reanimated';
@@ -30,60 +27,21 @@ import { BlurView } from 'expo-blur';
 import { borderRadius, shadows, spacing, typography } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
 import { useTranslation } from '@/hooks/useTranslation';
-import {
-  getLatestEtatCapteur,
-  getLatestTRG,
-  getLatestTRS,
-  getPiStatus,
-  getTodayLossesSummary,
-} from '@/lib/api';
+import { fetchConfiguration } from '@/lib/api';
 import { getSupabaseClient } from '@/lib/supabase';
-import { EtatCapteur, SystemNode, TodayLossSummary } from '@/types/production';
+import { Configuration } from '@/types/production';
+import { useSensorCounters } from '@/hooks/useSensorCounters';
+import { usePerformanceMetrics } from '@/hooks/usePerformanceMetrics';
+import { useTodaysLosses } from '@/hooks/useTodaysLosses';
 
 const SUCCESS_COLOR = '#10B981';
 const WARNING_COLOR = '#F59E0B';
 const ERROR_COLOR = '#EF4444';
 
-function isToday(value?: string | null) {
-  if (!value) return false;
-  const date = new Date(value);
-  const today = new Date();
-  return date.toDateString() === today.toDateString();
-}
-
-function isPiOnline(node: SystemNode | null | undefined) {
-  if (!node?.last_seen) return false;
-  return node.status === 'online' && Date.now() - new Date(node.last_seen).getTime() <= 2 * 60 * 1000;
-}
-
-function mapRealtimeSensorRow(row: any): EtatCapteur {
-  const timestamp = row?.timestamp || row?.date_temps || new Date().toISOString();
-  return {
-    id: row?.id ?? timestamp,
-    timestamp,
-    date_temps: row?.date_temps ?? null,
-    capteur1: Number(row?.capteur1 ?? 0),
-    capteur2: Number(row?.capteur2 ?? 0),
-    capteur3: Number(row?.capteur3 ?? 0),
-  };
-}
-
 function getPerformanceColor(value: number) {
   if (value >= 85) return SUCCESS_COLOR;
   if (value >= 65) return WARNING_COLOR;
   return ERROR_COLOR;
-}
-
-function formatTrend(delta: number) {
-  if (delta === 0) {
-    return { color: '#94A3B8', icon: 'remove', text: '=' };
-  }
-
-  if (delta > 0) {
-    return { color: SUCCESS_COLOR, icon: 'arrow-up', text: `+${delta}` };
-  }
-
-  return { color: ERROR_COLOR, icon: 'arrow-down', text: `${delta}` };
 }
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
@@ -95,23 +53,25 @@ function PerformanceCard({
   palette,
 }: {
   title: string;
-  value: number;
+  value: number | null;
   subtitle: string;
   palette: any;
 }) {
   const { isDark } = useTheme();
   const progress = useSharedValue(0);
-  const valueColor = getPerformanceColor(value);
+  const numericValue = value ?? 0;
+  const valueColor = value === null ? '#94A3B8' : getPerformanceColor(numericValue);
   
   const size = 80;
   const strokeWidth = 8;
   const center = size / 2;
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
+  const gradientId = `performance-${title.replace(/[^a-z0-9]/gi, '').toLowerCase()}`;
 
   useEffect(() => {
-    progress.value = withSpring(value / 100, { damping: 15 });
-  }, [value]);
+    progress.value = withSpring(numericValue / 100, { damping: 15 });
+  }, [numericValue, progress]);
 
   const animatedProps = useAnimatedProps(() => {
     const strokeDashoffset = circumference * (1 - progress.value);
@@ -138,7 +98,7 @@ function PerformanceCard({
         <View style={styles.circularContainer}>
           <Svg width={size} height={size}>
             <Defs>
-              <SvgGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <SvgGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="100%">
                 <Stop offset="0%" stopColor={valueColor} />
                 <Stop offset="100%" stopColor={isDark ? valueColor : valueColor + 'CC'} />
               </SvgGradient>
@@ -157,7 +117,7 @@ function PerformanceCard({
               cx={center}
               cy={center}
               r={radius}
-              stroke="url(#grad)"
+              stroke={`url(#${gradientId})`}
               strokeWidth={strokeWidth}
               strokeDasharray={circumference}
               animatedProps={animatedProps}
@@ -168,8 +128,8 @@ function PerformanceCard({
           </Svg>
           <View style={styles.percentageContainer}>
             <Text style={[styles.performanceValue, { color: palette.text, fontSize: 18, marginBottom: 0 }]}>
-              {Math.round(value)}
-              <Text style={{ fontSize: 10, color: palette.textSecondary }}>%</Text>
+              {value === null ? '—' : Math.round(value)}
+              {value === null ? null : <Text style={{ fontSize: 10, color: palette.textSecondary }}>%</Text>}
             </Text>
           </View>
         </View>
@@ -180,16 +140,42 @@ function PerformanceCard({
           </Text>
           <View style={[styles.trendBadge, { backgroundColor: valueColor + '15' }]}>
             <Ionicons 
-              name={value >= 85 ? 'trending-up' : value >= 65 ? 'remove' : 'trending-down'} 
+              name={value === null ? 'remove' : value >= 85 ? 'trending-up' : value >= 65 ? 'remove' : 'trending-down'} 
               size={12} 
               color={valueColor} 
             />
             <Text style={[styles.trendText, { color: valueColor }]}>
-              {value >= 85 ? 'Good' : value >= 65 ? 'Stable' : 'Low'}
+              {value === null ? 'No data yet' : value >= 85 ? 'Good' : value >= 65 ? 'Stable' : 'Low'}
             </Text>
           </View>
         </View>
       </View>
+    </View>
+  );
+}
+
+function MetricTile({
+  label,
+  value,
+  icon,
+  color,
+  palette,
+}: {
+  label: string;
+  value: string | number;
+  icon: keyof typeof Ionicons.glyphMap;
+  color: string;
+  palette: any;
+}) {
+  return (
+    <View style={[styles.metricTile, { backgroundColor: palette.backgroundSecondary, borderColor: palette.border }]}>
+      <View style={[styles.metricIcon, { backgroundColor: color + '18' }]}>
+        <Ionicons name={icon} size={18} color={color} />
+      </View>
+      <Text style={[styles.metricLabel, { color: palette.textSecondary }]} numberOfLines={1}>{label}</Text>
+      <Text style={[styles.metricValue, { color: palette.text }]} numberOfLines={1} adjustsFontSizeToFit>
+        {value}
+      </Text>
     </View>
   );
 }
@@ -201,7 +187,7 @@ function PulsingDot({ color }: { color: string }) {
   useEffect(() => {
     scale.value = withRepeat(withTiming(2, { duration: 2000 }), -1, false);
     opacity.value = withRepeat(withTiming(0, { duration: 2000 }), -1, false);
-  }, []);
+  }, [opacity, scale]);
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
@@ -224,16 +210,12 @@ function PulsingDot({ color }: { color: string }) {
 function SensorRow({
   label,
   count,
-  previousCount,
   palette,
 }: {
   label: string;
   count: number;
-  previousCount?: number;
   palette: any;
 }) {
-  const trend = formatTrend(count - (previousCount ?? count));
-
   return (
     <View style={[styles.sensorRow, { borderBottomColor: palette.border }]}>
       <View style={styles.sensorLeft}>
@@ -242,10 +224,6 @@ function SensorRow({
       </View>
       <View style={styles.sensorRight}>
         <Text style={[styles.sensorCount, { color: palette.text }]}>{count}</Text>
-        <View style={[styles.sensorTrend, { backgroundColor: trend.color + '12' }]}>
-          <Ionicons name={trend.icon as any} size={12} color={trend.color} />
-          <Text style={[styles.sensorTrendText, { color: trend.color }]}>{trend.text}</Text>
-        </View>
       </View>
     </View>
   );
@@ -253,11 +231,14 @@ function SensorRow({
 
 export default function DashboardScreen() {
   const { palette, isDark } = useTheme();
-  const { t, language } = useTranslation();
+  const { t } = useTranslation();
   const [refreshing, setRefreshing] = useState(false);
-  const [sensorRows, setSensorRows] = useState<EtatCapteur[]>([]);
-  const [todayLosses, setTodayLosses] = useState<TodayLossSummary>({ totalCards: 0, totalCost: 0 });
-  const [isLoadingSensorsAndLosses, setIsLoadingSensorsAndLosses] = useState(true);
+  const [configuration, setConfiguration] = useState<Configuration | null>(null);
+  const [isLoadingConfig, setIsLoadingConfig] = useState(true);
+
+  const sensors = useSensorCounters();
+  const { trg, trs, loading: mLoading } = usePerformanceMetrics();
+  const { totalCost, totalCards, loading: lossesLoading } = useTodaysLosses();
 
   // Active batch info
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
@@ -331,68 +312,28 @@ export default function DashboardScreen() {
     }, [])
   );
 
-  const trgQuery = useQuery({
-    queryKey: ['production', 'dashboard', 'trg'],
-    queryFn: getLatestTRG,
-  });
-
-  const trsQuery = useQuery({
-    queryKey: ['production', 'dashboard', 'trs'],
-    queryFn: getLatestTRS,
-  });
-
-  const piQuery = useQuery({
-    queryKey: ['production', 'dashboard', 'pi'],
-    queryFn: getPiStatus,
-  });
-
-  const fetchSensorsAndLosses = async () => {
+  const fetchConfigurationData = useCallback(async () => {
     try {
-      const [sensorsData, lossesData] = await Promise.all([
-        getLatestEtatCapteur(2),
-        getTodayLossesSummary(),
-      ]);
-      setSensorRows(sensorsData || []);
-      setTodayLosses(lossesData || { totalCards: 0, totalCost: 0 });
+      const configData = await fetchConfiguration();
+      setConfiguration(configData as Configuration | null);
     } catch (error) {
-      console.error('fetchSensorsAndLosses failed:', error);
+      console.error('fetchConfigurationData failed:', error);
     } finally {
-      setIsLoadingSensorsAndLosses(false);
+      setIsLoadingConfig(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    fetchSensorsAndLosses();
+    fetchConfigurationData();
     fetchActiveBatchData();
-  }, []);
+  }, [fetchConfigurationData]);
 
   useEffect(() => {
     const supabase = getSupabaseClient();
     if (!supabase) return;
 
     const channel = supabase
-      .channel('production-dashboard-live')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'etat_capteur' },
-        (payload) => {
-          const nextRow = mapRealtimeSensorRow(payload.new);
-          setSensorRows((current) => [nextRow, ...current].slice(0, 2));
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'pertes_table' },
-        (payload) => {
-          const row = payload.new as any;
-          if (!isToday(row?.date_temps || row?.timestamp)) return;
-
-          setTodayLosses((current) => ({
-            totalCards: current.totalCards + Number(row?.nb_cartes_perdues ?? 0),
-            totalCost: current.totalCost + Number(row?.pertes_totale ?? 0),
-          }));
-        }
-      )
+      .channel('dashboard-cards-live')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'electronic_cards' },
@@ -410,7 +351,7 @@ export default function DashboardScreen() {
             }
           } else if (eventType === 'UPDATE') {
             if (activeBatchId && newRow.batch_id === activeBatchId) {
-              setBatchCards((curr) => 
+              setBatchCards((curr) =>
                 curr.map(c => c.id === newRow.id ? newRow : c)
               );
             } else if (activeBatchId && oldRow?.batch_id === activeBatchId) {
@@ -431,45 +372,44 @@ export default function DashboardScreen() {
     };
   }, [activeBatchId]);
 
-
   const onRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([
-      fetchSensorsAndLosses(),
-      fetchActiveBatchData(),
-      trgQuery.refetch(),
-      trsQuery.refetch(),
-      piQuery.refetch(),
-    ]);
+    await Promise.all([fetchConfigurationData(), fetchActiveBatchData()]);
     setRefreshing(false);
   };
 
-  const latestRow = sensorRows[0];
-  const previousRow = sensorRows[1];
-  const piOnline = isPiOnline(piQuery.data);
+  const expectedCards = configuration?.nb_cartes_attendues ?? 10;
+  const producedCards = sensors.capteur3.counter;
+  const lostCards = Math.max(0, sensors.capteur1.counter - sensors.capteur3.counter);
+  const productionProgress = expectedCards > 0 ? Math.min(100, Math.round((producedCards / expectedCards) * 100)) : null;
+  const piOnline =
+    sensors.capteur1.counter > 0 ||
+    sensors.capteur2.counter > 0 ||
+    sensors.capteur3.counter > 0 ||
+    Boolean(sensors.capteur1.lastSeen || sensors.capteur2.lastSeen || sensors.capteur3.lastSeen);
 
   const sensorItems = useMemo(
     () => [
       {
         key: 'capteur1',
         label: t('sensor1Entry'),
-        count: latestRow?.capteur1 ?? 0,
-        previousCount: previousRow?.capteur1,
+        count: sensors.capteur1.counter,
+        lastSeen: sensors.capteur1.lastSeen,
       },
       {
         key: 'capteur2',
         label: t('sensor2Middle'),
-        count: latestRow?.capteur2 ?? 0,
-        previousCount: previousRow?.capteur2,
+        count: sensors.capteur2.counter,
+        lastSeen: sensors.capteur2.lastSeen,
       },
       {
         key: 'capteur3',
         label: t('sensor3Exit'),
-        count: latestRow?.capteur3 ?? 0,
-        previousCount: previousRow?.capteur3,
+        count: sensors.capteur3.counter,
+        lastSeen: sensors.capteur3.lastSeen,
       },
     ],
-    [latestRow, previousRow, t]
+    [sensors, t]
   );
 
   const groupedCounters = useMemo(() => {
@@ -481,11 +421,7 @@ export default function DashboardScreen() {
     return counts;
   }, [batchCards]);
 
-  const isInitialLoading =
-    isLoadingSensorsAndLosses &&
-    trgQuery.isLoading &&
-    trsQuery.isLoading &&
-    piQuery.isLoading;
+  const isInitialLoading = isLoadingConfig || mLoading || lossesLoading;
 
   if (isInitialLoading) {
     return (
@@ -502,6 +438,14 @@ export default function DashboardScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={palette.primary} />}
         showsVerticalScrollIndicator={false}
       >
+        <View style={[styles.topNavRow, { backgroundColor: palette.background, borderColor: palette.border }]}> 
+          <TouchableOpacity style={[styles.topNavBackBtn, { borderColor: palette.border }]} onPress={() => router.push('/(tabs)')}>
+            <Ionicons name="arrow-back" size={16} color={palette.text} />
+          </TouchableOpacity>
+          <Text style={[styles.topNavTitle, { color: palette.text }]}>Dashboard</Text>
+          <View style={styles.topNavBackBtn} />
+        </View>
+
         <View style={styles.headerWrap}>
           <BlurView intensity={isDark ? 30 : 60} tint={isDark ? "dark" : "light"} style={styles.headerBlur}>
             <LinearGradient
@@ -535,16 +479,51 @@ export default function DashboardScreen() {
         <View style={styles.performanceGrid}>
           <PerformanceCard
             title={t('trgLabel')}
-            value={trgQuery.data?.trg_pourcentage ?? 0}
-            subtitle={`${trgQuery.data?.cartes_bonnes ?? 0} / ${trgQuery.data?.cartes_attendues ?? 0}`}
+            value={mLoading ? null : trg}
+            subtitle={mLoading ? '-' : trg !== null ? `${trg.toFixed(1)}%` : 'No data yet'}
             palette={palette}
           />
           <PerformanceCard
             title={t('trsLabel')}
-            value={trsQuery.data?.trs_pourcentage ?? 0}
-            subtitle={`${trsQuery.data?.cartes_bonnes ?? 0} / ${trsQuery.data?.cartes_produites ?? 0}`}
+            value={mLoading ? null : trs}
+            subtitle={mLoading ? '-' : trs !== null ? `${trs.toFixed(1)}%` : 'No data yet'}
             palette={palette}
           />
+        </View>
+
+        <View style={[styles.sectionCard, { backgroundColor: palette.background, borderColor: palette.border }]}>
+          <View style={styles.sectionHeaderRow}>
+            <View>
+              <Text style={[styles.sectionTitle, { color: palette.text, marginBottom: 2 }]}>Production Snapshot</Text>
+              <Text style={[styles.sectionCaption, { color: palette.textSecondary }]}>
+                {configuration?.machine_name || 'Machine not configured'}
+              </Text>
+            </View>
+            <View style={[styles.progressBadge, { backgroundColor: (productionProgress === null ? '#94A3B8' : palette.primary) + '14' }]}>
+              <Text style={[styles.progressBadgeText, { color: productionProgress === null ? '#94A3B8' : palette.primary }]}>
+                {productionProgress === null ? '—' : `${productionProgress}%`}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.metricsGrid}>
+            <MetricTile label="Expected" value={expectedCards || '—'} icon="flag-outline" color={palette.primary} palette={palette} />
+            <MetricTile label="Produced" value={producedCards} icon="checkmark-done-outline" color={SUCCESS_COLOR} palette={palette} />
+            <MetricTile label="Lost" value={lostCards} icon="warning-outline" color={lostCards > 0 ? ERROR_COLOR : SUCCESS_COLOR} palette={palette} />
+            <MetricTile label="Cycle" value={`${configuration?.cycle_time_seconds ?? '—'}s`} icon="timer-outline" color={WARNING_COLOR} palette={palette} />
+          </View>
+          <View style={styles.snapshotProgressWrap}>
+            <View style={[styles.snapshotProgressTrack, { backgroundColor: palette.border }]}>
+              <View
+                style={[
+                  styles.snapshotProgressFill,
+                  {
+                    backgroundColor: productionProgress === null ? '#94A3B8' : palette.primary,
+                    width: `${productionProgress ?? 0}%`,
+                  },
+                ]}
+              />
+            </View>
+          </View>
         </View>
 
         {/* Real-time active batch tracker counters */}
@@ -605,29 +584,12 @@ export default function DashboardScreen() {
               </View>
             )}
           </View>
-        ) : (
-          <View style={[styles.sectionCard, { backgroundColor: palette.background, borderColor: palette.border }]}>
-            <View style={styles.noBatchWrapper}>
-              <Ionicons name="construct-outline" size={28} color={palette.textTertiary} />
-              <Text style={[styles.noBatchTitle, { color: palette.text }]}>No Active Batch</Text>
-              <Text style={[styles.noBatchText, { color: palette.textSecondary }]}>
-                Go to settings to start a production batch and monitor live card counters here.
-              </Text>
-              <TouchableOpacity
-                activeOpacity={0.8}
-                onPress={() => router.push('/settings')}
-                style={[styles.noBatchBtn, { backgroundColor: palette.primary }]}
-              >
-                <Text style={styles.noBatchBtnText}>Configure Settings</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
+        ) : null}
 
         <View style={[styles.sectionCard, { backgroundColor: palette.background, borderColor: palette.border }]}>
           <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('realtimeSensors')}</Text>
 
-          {sensorRows.length === 0 ? (
+          {sensorItems.every(item => item.count === 0) ? (
             <View style={styles.emptyBlock}>
               <Ionicons name="radio-outline" size={28} color={palette.textTertiary} />
               <Text style={[styles.emptyTitle, { color: palette.textSecondary }]}>{t('noRealtimeData')}</Text>
@@ -636,9 +598,8 @@ export default function DashboardScreen() {
             sensorItems.map((item, index) => (
               <View key={item.key}>
                 <SensorRow
-                  label={item.label}
+                  label={`${item.label} (${item.lastSeen || '-'})`}
                   count={item.count}
-                  previousCount={item.previousCount}
                   palette={palette}
                 />
                 {index === sensorItems.length - 1 ? null : <View style={[styles.sensorDivider, { backgroundColor: palette.border }]} />}
@@ -648,7 +609,7 @@ export default function DashboardScreen() {
         </View>
 
         <View style={[styles.sectionCard, { backgroundColor: palette.background, borderColor: palette.border, overflow: 'hidden' }]}>
-          {todayLosses.totalCards > 0 ? (
+          {totalCards > 0 ? (
              <LinearGradient
                colors={isDark ? ['#450a0a', '#171717'] : ['#fef2f2', '#ffffff']}
                style={StyleSheet.absoluteFill}
@@ -661,7 +622,7 @@ export default function DashboardScreen() {
           )}
           <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('todayLosses')}</Text>
 
-          {todayLosses.totalCards === 0 ? (
+          {totalCards === 0 ? (
             <View style={styles.lossesOkState}>
               <View style={[styles.lossIconCircle, { backgroundColor: SUCCESS_COLOR + '20' }]}>
                 <Ionicons name="shield-checkmark" size={28} color={SUCCESS_COLOR} />
@@ -678,10 +639,10 @@ export default function DashboardScreen() {
               </View>
               <View style={styles.lossesTextWrap}>
                 <Text style={[styles.lossesTitle, { color: palette.text }]}>
-                  {t('lostCardsValue').replace('{{count}}', String(todayLosses.totalCards))}
+                  {t('lostCardsValue').replace('{{count}}', String(totalCards))}
                 </Text>
                 <Text style={[styles.lossesSubtitle, { color: ERROR_COLOR, fontWeight: '800', fontSize: 16 }]}>
-                  {t('lossCostValue').replace('{{cost}}', todayLosses.totalCost.toFixed(3))}
+                  {lossesLoading ? '...' : t('lossCostValue').replace('{{cost}}', totalCost.toFixed(3))}
                 </Text>
               </View>
             </View>
@@ -719,7 +680,28 @@ const styles = StyleSheet.create({
   content: {
     padding: spacing.lg,
     gap: spacing.lg,
-    paddingBottom: spacing.xl,
+    paddingBottom: spacing.xxxl,
+  },
+  topNavRow: {
+    borderWidth: 1,
+    borderRadius: borderRadius.lg,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  topNavBackBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  topNavTitle: {
+    ...typography.bodyBold,
+    fontSize: 16,
   },
   headerWrap: {
     borderRadius: borderRadius.xl,
@@ -868,6 +850,136 @@ const styles = StyleSheet.create({
   sectionTitle: {
     ...typography.h4,
     marginBottom: spacing.lg,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+  sectionCaption: {
+    ...typography.small,
+    fontWeight: '600',
+  },
+  progressBadge: {
+    minWidth: 54,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRadius: borderRadius.full,
+    alignItems: 'center',
+  },
+  progressBadgeText: {
+    ...typography.smallBold,
+  },
+  metricsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  metricTile: {
+    flexBasis: '47%',
+    flexGrow: 1,
+    minHeight: 104,
+    borderWidth: 1,
+    borderRadius: borderRadius.lg,
+    padding: spacing.md,
+    justifyContent: 'space-between',
+  },
+  metricIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  metricLabel: {
+    ...typography.tiny,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  metricValue: {
+    ...typography.h3,
+    fontWeight: '900',
+  },
+  snapshotProgressWrap: {
+    marginTop: spacing.md,
+  },
+  snapshotProgressTrack: {
+    height: 8,
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  snapshotProgressFill: {
+    height: '100%',
+    borderRadius: 4,
+  },
+  lossBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRadius: borderRadius.full,
+  },
+  lossBadgeText: {
+    ...typography.smallBold,
+  },
+  flowRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: spacing.sm,
+  },
+  flowStep: {
+    alignItems: 'center',
+    flex: 1,
+    gap: 8,
+  },
+  flowNode: {
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  flowCount: {
+    ...typography.h3,
+    fontWeight: '900',
+  },
+  flowLabel: {
+    ...typography.tiny,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  flowConnector: {
+    width: 28,
+    height: 2,
+    borderRadius: 1,
+    marginBottom: 24,
+  },
+  lossZoneGrid: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.lg,
+  },
+  lossZone: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: borderRadius.lg,
+    padding: spacing.md,
+    alignItems: 'center',
+    gap: 4,
+  },
+  lossZoneLabel: {
+    ...typography.tiny,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    textAlign: 'center',
+  },
+  lossZoneValue: {
+    ...typography.h3,
+    fontWeight: '900',
   },
   emptyBlock: {
     alignItems: 'center',

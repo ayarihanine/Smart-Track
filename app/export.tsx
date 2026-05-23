@@ -10,7 +10,7 @@ import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as XLSX from 'xlsx';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getCards } from '@/lib/api';
+import { fetchN8nReportData } from '@/lib/api';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useRoleGuard } from '@/hooks/useRoleGuard';
 
@@ -23,6 +23,23 @@ interface GeneratedReport {
   date: string;
   type: 'pdf' | 'excel' | 'json' | 'csv';
   count: number;
+}
+
+function flattenRows(rows: any[]) {
+  return rows.map((row) => {
+    if (row && typeof row === 'object' && !Array.isArray(row)) {
+      const out: Record<string, any> = {};
+      Object.entries(row).forEach(([key, value]) => {
+        if (value && typeof value === 'object') {
+          out[key] = JSON.stringify(value);
+        } else {
+          out[key] = value;
+        }
+      });
+      return out;
+    }
+    return { value: row };
+  });
 }
 
 function FormatBtn({ label, icon, active, onPress }: {
@@ -95,9 +112,8 @@ export default function ExportScreen() {
     if (exporting) return;
     setExporting(true);
     try {
-      const cards = await getCards();
-      const filtered = scope === 'all' ? cards
-        : cards.filter(c => c.status === scope);
+      const workflowRows = await fetchN8nReportData(scope);
+      const filtered = flattenRows(workflowRows);
 
       if (format === 'xlsx') {
         const worksheet = XLSX.utils.json_to_sheet(filtered);
@@ -118,10 +134,8 @@ export default function ExportScreen() {
           content = JSON.stringify(filtered, null, 2);
           saveReport('json', filtered.length);
         } else {
-          const headers = ['cardId', 'productName', 'status', 'currentStage', 'currentLocation', 'progressPercent', 'totalTimeMinutes', 'createdAt'];
-          const rows = filtered.map(c =>
-            headers.map(h => (c as any)[h] ?? '').join(',')
-          );
+          const headers = Object.keys(filtered[0] || {});
+          const rows = filtered.map(c => headers.map(h => (c as any)[h] ?? '').join(','));
           content = [headers.join(','), ...rows].join('\n');
           saveReport('csv', filtered.length);
         }
@@ -144,8 +158,9 @@ export default function ExportScreen() {
     if (generatingPdf) return;
     setGeneratingPdf(true);
     try {
-      const cards = await getCards();
+      const rows = flattenRows(await fetchN8nReportData(scope));
       const now = new Date().toLocaleString();
+      const headers = Object.keys(rows[0] || {}).slice(0, 6);
       
       const html = `
         <html>
@@ -179,43 +194,39 @@ export default function ExportScreen() {
               <div class="logo">CARD-TRACK</div>
             </div>
 
+            <div class="meta" style="margin-bottom: 10px;">Data source: n8n workflow</div>
+
             <div class="stats">
               <div class="stat-box">
                 <div class="stat-label">Total Cards</div>
-                <div class="stat-value">${cards.length}</div>
+                <div class="stat-value">${rows.length}</div>
               </div>
               <div class="stat-box">
                 <div class="stat-label">Completed</div>
-                <div class="stat-value">${cards.filter(c => c.status === 'completed').length}</div>
+                <div class="stat-value">${rows.filter(c => c.status === 'completed').length}</div>
               </div>
               <div class="stat-box">
                 <div class="stat-label">In Progress</div>
-                <div class="stat-value">${cards.filter(c => c.status === 'in_progress').length}</div>
+                <div class="stat-value">${rows.filter(c => c.status === 'in_progress').length}</div>
               </div>
             </div>
 
             <table>
               <thead>
                 <tr>
-                  <th>Card ID</th>
-                  <th>Product</th>
-                  <th>Stage</th>
-                  <th>Status</th>
-                  <th>Updated</th>
+                  ${headers.map((header) => `<th>${header}</th>`).join('')}
                 </tr>
               </thead>
               <tbody>
-                ${cards.map(c => `
+                ${rows.map(c => `
                   <tr>
-                    <td><strong>${c.cardId}</strong></td>
-                    <td>${c.productName || 'N/A'}</td>
-                    <td>${c.currentStage || 'Unknown'}</td>
-                    <td>
-                      <span class="status-badge ${c.status === 'completed' ? 'completed' : 'in-progress'}">
-                        ${c.status}
-                      </span>
-                    </td>
-                    <td>${new Date(c.updatedAt).toLocaleDateString()}</td>
+                    ${headers.map((header) => {
+                      const value = c[header] ?? '';
+                      if (header === 'status') {
+                        return `<td><span class="status-badge ${value === 'completed' ? 'completed' : 'in-progress'}">${value}</span></td>`;
+                      }
+                      return `<td>${String(value)}</td>`;
+                    }).join('')}
                   </tr>
                 `).join('')}
               </tbody>
@@ -230,7 +241,7 @@ export default function ExportScreen() {
 
       const { uri } = await Print.printToFileAsync({ html });
       await Sharing.shareAsync(uri, { UTI: '.pdf', mimeType: 'application/pdf' });
-      saveReport('pdf', cards.length);
+      saveReport('pdf', rows.length);
       
     } catch (error) {
       console.error('PDF Generation Error:', error);

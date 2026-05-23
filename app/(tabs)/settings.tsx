@@ -8,6 +8,7 @@ import {
   View,
   TextInput,
   ActivityIndicator,
+  Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,6 +19,7 @@ import { borderRadius, shadows, spacing, typography } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useAuthStore } from '@/store/authStore';
+import { useSettingsStore } from '@/store/settingsStore';
 import { getSupabaseClient } from '@/lib/supabase';
 import { getConfiguration, updateConfiguration } from '@/lib/api';
 
@@ -60,12 +62,27 @@ function SettingsLink({
 export default function SettingsTabScreen() {
   const { user, signOut } = useAuthStore();
   const { t } = useTranslation();
-  const { palette } = useTheme();
+  const { palette, setTheme } = useTheme();
+  const settings = useSettingsStore();
 
   const role = user?.role || 'operator';
   const roleStyle = ROLE_STYLES[role];
   const roleLabel =
     role === 'admin' ? t('roleAdmin') : role === 'supervisor' ? t('roleSupervisor') : t('roleOperator');
+
+  const updateSetting = async (key: 'notificationsEnabled' | 'vibrationEnabled' | 'offlineModeEnabled', value: boolean) => {
+    try {
+      await settings.setSettings({ [key]: value });
+    } catch (err) {
+      console.error(`Failed to update ${key}:`, err);
+      Alert.alert(t('error'), 'Failed to update setting');
+    }
+  };
+
+  const handleThresholdChange = async (delta: number) => {
+    const nextValue = Math.max(36, Math.min(240, settings.stuckCardThresholdHours + delta));
+    await settings.setStuckCardThreshold(nextValue);
+  };
 
   // Active Batch Local State
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
@@ -315,7 +332,7 @@ export default function SettingsTabScreen() {
     <SafeAreaView style={[styles.container, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         {/* Profile Card */}
-        <View style={[styles.profileCard, { backgroundColor: palette.background, borderColor: palette.border }]}>
+        <View style={[styles.profileCard, { backgroundColor: palette.background, borderColor: palette.border }]}> 
           <View style={[styles.avatar, { backgroundColor: roleStyle.color }]}>
             <Text style={styles.avatarText}>{user?.displayName?.[0]?.toUpperCase() || 'U'}</Text>
           </View>
@@ -327,6 +344,92 @@ export default function SettingsTabScreen() {
               <Ionicons name={roleStyle.icon} size={13} color={roleStyle.color} />
               <Text style={[styles.roleBadgeText, { color: roleStyle.color }]}>{roleLabel}</Text>
             </View>
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <SectionTitle title="App Preferences" palette={palette} />
+          <View style={[styles.card, { backgroundColor: palette.background, borderColor: palette.border }]}> 
+            <View style={styles.inlineSettingRow}>
+              <Text style={[styles.inlineSettingLabel, { color: palette.text }]}>Theme</Text>
+              <View style={styles.themeControls}>
+                {(['light', 'dark', 'auto'] as const).map((mode) => (
+                  <TouchableOpacity
+                    key={mode}
+                    onPress={() => setTheme(mode)}
+                    style={[
+                      styles.themeChip,
+                      {
+                        borderColor: settings.theme === mode ? palette.primary : palette.border,
+                        backgroundColor: settings.theme === mode ? palette.primary + '14' : palette.backgroundSecondary,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={{
+                        color: settings.theme === mode ? palette.primary : palette.textSecondary,
+                        fontSize: 12,
+                        fontWeight: '700',
+                        textTransform: 'capitalize',
+                      }}
+                    >
+                      {mode}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            <View style={[styles.divider, { backgroundColor: palette.border }]} />
+
+            <View style={styles.inlineSettingRow}>
+              <Text style={[styles.inlineSettingLabel, { color: palette.text }]}>Notifications</Text>
+              <Switch
+                value={settings.notificationsEnabled}
+                onValueChange={(value) => updateSetting('notificationsEnabled', value)}
+                trackColor={{ false: palette.border, true: '#10B981' }}
+              />
+            </View>
+
+            <View style={[styles.divider, { backgroundColor: palette.border }]} />
+
+            <View style={styles.inlineSettingRow}>
+              <Text style={[styles.inlineSettingLabel, { color: palette.text }]}>Haptic Feedback</Text>
+              <Switch
+                value={settings.vibrationEnabled}
+                onValueChange={(value) => updateSetting('vibrationEnabled', value)}
+                trackColor={{ false: palette.border, true: '#F59E0B' }}
+              />
+            </View>
+
+            <View style={[styles.divider, { backgroundColor: palette.border }]} />
+
+            <View style={styles.inlineSettingRow}>
+              <Text style={[styles.inlineSettingLabel, { color: palette.text }]}>Offline Queueing</Text>
+              <Switch
+                value={settings.offlineModeEnabled}
+                onValueChange={(value) => updateSetting('offlineModeEnabled', value)}
+                trackColor={{ false: palette.border, true: palette.primary }}
+              />
+            </View>
+
+            {(role === 'supervisor' || role === 'admin') && (
+              <>
+                <View style={[styles.divider, { backgroundColor: palette.border }]} />
+                <View style={styles.inlineSettingRow}>
+                  <Text style={[styles.inlineSettingLabel, { color: palette.text }]}>Stuck card threshold</Text>
+                  <View style={[styles.counterRow, { backgroundColor: palette.backgroundSecondary }]}> 
+                    <TouchableOpacity style={[styles.counterBtn, { backgroundColor: palette.background }]} onPress={() => handleThresholdChange(-1)}>
+                      <Ionicons name="remove" size={16} color={palette.text} />
+                    </TouchableOpacity>
+                    <Text style={[styles.counterText, { color: palette.text }]}>{settings.stuckCardThresholdHours}h</Text>
+                    <TouchableOpacity style={[styles.counterBtn, { backgroundColor: palette.background }]} onPress={() => handleThresholdChange(1)}>
+                      <Ionicons name="add" size={16} color={palette.text} />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </>
+            )}
           </View>
         </View>
 
@@ -585,6 +688,28 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.8,
   },
+  inlineSettingRow: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  inlineSettingLabel: {
+    ...typography.bodyBold,
+    fontSize: 14,
+    flex: 1,
+  },
+  themeControls: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+  },
+  themeChip: {
+    borderWidth: 1,
+    borderRadius: borderRadius.full,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
   linkRow: {
     borderWidth: 1,
     borderRadius: borderRadius.xl,
@@ -718,5 +843,25 @@ const styles = StyleSheet.create({
   gpioContainer: {
     flexDirection: 'row',
     gap: spacing.sm,
+  },
+  counterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderRadius: borderRadius.md,
+    padding: 4,
+  },
+  counterBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: borderRadius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...shadows.xs,
+  },
+  counterText: {
+    ...typography.bodyBold,
+    minWidth: 32,
+    textAlign: 'center',
   },
 });

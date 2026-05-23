@@ -68,6 +68,7 @@ export const colors = {
   textTertiary: '#94A3B8',
   textDisabled: '#CBD5E1',
   border: '#E2E8F0',
+  borderLight: '#E5E7EB',
 
   // Static Colors
   white: '#FFFFFF',
@@ -83,6 +84,7 @@ export const colors = {
     textTertiary: '#94A3B8',
     textDisabled: '#CBD5E1',
     border: '#E2E8F0',
+    borderLight: '#E5E7EB',
     primary: '#2563EB',
     primaryTint: '#2563EB33',
   },
@@ -97,6 +99,7 @@ export const colors = {
     textTertiary: '#94A3B8',
     textDisabled: '#475569',
     border: '#334155',
+    borderLight: '#E5E7EB',
     primary: '#3B82F6',
     primaryTint: '#3B82F633',
   }

@@ -6,10 +6,27 @@ import { router } from 'expo-router';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as XLSX from 'xlsx';
-import { getCards } from '@/lib/api';
+import { fetchN8nReportData } from '@/lib/api';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
 import { colors, spacing, typography, borderRadius } from '@/constants/design';
+
+function flattenRows(rows: any[]) {
+  return rows.map((row) => {
+    if (row && typeof row === 'object' && !Array.isArray(row)) {
+      const out: Record<string, any> = {};
+      Object.entries(row).forEach(([key, value]) => {
+        if (value && typeof value === 'object') {
+          out[key] = JSON.stringify(value);
+        } else {
+          out[key] = value;
+        }
+      });
+      return out;
+    }
+    return { value: row };
+  });
+}
 
 export default function DailyReportScreen() {
   const { t } = useTranslation();
@@ -22,7 +39,8 @@ export default function DailyReportScreen() {
     setErrorMsg(null);
 
     try {
-      const cards = await getCards();
+      const rows = await fetchN8nReportData('all');
+      const exportRows = flattenRows(rows);
       
       const date = new Date();
       const yyyy = date.getFullYear();
@@ -30,16 +48,9 @@ export default function DailyReportScreen() {
       const dd = String(date.getDate()).padStart(2, '0');
       const dateString = `${yyyy}-${mm}-${dd}`;
 
-      // Filter for today's cards
-      const startOfToday = new Date();
-      startOfToday.setHours(0, 0, 0, 0);
-      const todaysCards = cards.filter(c => new Date(c.createdAt) >= startOfToday || new Date(c.updatedAt) >= startOfToday);
-
-      const dataToExport = todaysCards.length > 0 ? todaysCards : cards;
-
-      const worksheet = XLSX.utils.json_to_sheet(dataToExport);
+      const worksheet = XLSX.utils.json_to_sheet(exportRows);
       const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, "DailyProduction");
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'N8N_Daily_Report');
       
       const wbout = XLSX.write(workbook, { type: 'base64', bookType: 'xlsx' });
       const fileUri = `${FileSystem.cacheDirectory}CardTrack_Daily_Report_${dateString}.xlsx`;
@@ -81,9 +92,14 @@ export default function DailyReportScreen() {
           </View>
           
           <Text style={[styles.title, { color: palette.text }]}>{t('todayReportTitle') || "Today's Production Report"}</Text>
-          <Text style={[styles.description, { color: palette.textSecondary }]}>
-            {t('todayReportDesc') || "Download the Excel report containing all production data for today."}
+          <Text style={[styles.description, { color: palette.textSecondary }]}> 
+            {t('todayReportDesc') || 'Download the Excel report generated from the n8n workflow data source.'}
           </Text>
+
+          <View style={[styles.sourceBadge, { backgroundColor: palette.primary + '12', borderColor: palette.primary + '35' }]}>
+            <Ionicons name="git-network-outline" size={14} color={palette.primary} />
+            <Text style={[styles.sourceBadgeText, { color: palette.primary }]}>Source: n8n workflow</Text>
+          </View>
 
           {errorMsg && (
             <View style={[styles.errorBox, { backgroundColor: colors.error + '15', borderColor: colors.error + '30' }]}>
@@ -158,6 +174,21 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: spacing.xl,
     paddingHorizontal: spacing.sm,
+  },
+  sourceBadge: {
+    width: '100%',
+    borderWidth: 1,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    marginBottom: spacing.lg,
+  },
+  sourceBadgeText: {
+    ...typography.smallBold,
   },
   downloadBtn: {
     flexDirection: 'row',

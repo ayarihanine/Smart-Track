@@ -95,10 +95,7 @@ function RootNavigator() {
       <Stack.Screen
         name="card/[id]"
         options={{
-          headerShown: true,
-          headerTitle: t('cardDetails'),
-          headerStyle: { backgroundColor: palette.primary },
-          headerTintColor: '#fff',
+          headerShown: false,
         }}
       />
       <Stack.Screen
@@ -139,15 +136,6 @@ function RootNavigator() {
         }}
       />
 
-      <Stack.Screen
-        name="issues"
-        options={{
-          headerShown: true,
-          headerTitle: t('issuesAndTasks'),
-          headerStyle: { backgroundColor: palette.primary },
-          headerTintColor: '#fff',
-        }}
-      />
     </Stack>
   );
 }
