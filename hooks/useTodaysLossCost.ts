@@ -24,14 +24,14 @@ interface ProductionLossRow {
 
 function getFilterStartDate(filter: LossesFilter): string {
   const start = new Date();
-  start.setHours(0, 0, 0, 0);
+  start.setUTCHours(0, 0, 0, 0);
 
   if (filter === 'week') {
-    const day = start.getDay();
+    const day = start.getUTCDay();
     const diff = day === 0 ? 6 : day - 1;
-    start.setDate(start.getDate() - diff);
+    start.setUTCDate(start.getUTCDate() - diff);
   } else if (filter === 'month') {
-    start.setDate(1);
+    start.setUTCDate(1);
   }
 
   return start.toISOString();

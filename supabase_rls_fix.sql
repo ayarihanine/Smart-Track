@@ -140,6 +140,33 @@ CREATE POLICY "anon_insert_sensor_events"
   WITH CHECK (true);
 
 -- ============================================================
+-- 7. profiles: Fix "infinite recursion detected in policy" error
+-- Drop any policy that queries profiles itself (causes recursion)
+-- ============================================================
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "profiles_select_all" ON profiles;
+DROP POLICY IF EXISTS "profiles_select_own" ON profiles;
+DROP POLICY IF EXISTS "users_profiles_select" ON profiles;
+DROP POLICY IF EXISTS "users_self_profile" ON profiles;
+DROP POLICY IF EXISTS "Profiles select" ON profiles;
+DROP POLICY IF EXISTS "Profiles update" ON profiles;
+DROP POLICY IF EXISTS "Enable read access for all users" ON profiles;
+DROP POLICY IF EXISTS "Enable insert for authenticated users only" ON profiles;
+DROP POLICY IF EXISTS "Enable update for users based on id" ON profiles;
+
+-- Non-recursive policy: allow all authenticated users to read profiles
+CREATE POLICY "profiles_select_all" ON profiles
+  FOR SELECT TO anon, authenticated
+  USING (true);
+
+-- Allow admins to update any profile
+CREATE POLICY "profiles_update_admin" ON profiles
+  FOR UPDATE TO authenticated
+  USING (auth.jwt() ->> 'role' = 'admin')
+  WITH CHECK (auth.jwt() ->> 'role' = 'admin');
+
+-- ============================================================
 -- OPTIONAL VERIFICATION: Check policies are applied
 -- ============================================================
 SELECT tablename, policyname, roles, cmd
@@ -150,6 +177,7 @@ WHERE tablename IN (
   'configuration',
   'etat_capteur',
   'pertes_table',
-  'sensor_events'
+  'sensor_events',
+  'profiles'
 )
 ORDER BY tablename, cmd;

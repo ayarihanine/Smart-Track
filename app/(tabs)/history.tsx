@@ -14,35 +14,35 @@ import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
 import { getSupabaseClient } from '@/lib/supabase';
 
-function CardRow({ 
-  card, 
-  onPress, 
-  onDelete, 
-  palette, 
-  t, 
-  formatDate, 
+function CardRow({
+  card,
+  onPress,
+  onDelete,
+  palette,
+  t,
+  formatDate,
   formatTime,
-  stages
-}: { 
-  card: ElectronicCard; 
-  onPress: () => void; 
+}: {
+  card: ElectronicCard;
+  onPress: () => void;
   onDelete: () => void;
   palette: any;
   t: any;
   formatDate: (d: string) => string;
   formatTime: (d: string) => string;
-  stages: any[];
 }) {
   const { isDark } = useTheme();
-  const stageName = card.currentStage?.split(':')[1]?.trim() || card.currentStage || '';
-  const stageColor = stages.find(s => stageName.includes(s.value))?.color || '#6B7280';
   const isCompleted = card.status === 'completed';
+  const statusLabel = isCompleted ? t('completed' as any) : t('inProgress' as any);
+  const statusColor = isCompleted ? '#10B981' : palette.primary;
+  const machineUnknown = !card.currentMachine || card.currentMachine === 'Unknown';
+  const enteredAt = card.stageEnteredAt || card.updatedAt;
 
   return (
     <Animated.View style={styles.cardRowWrapper}>
-      <TouchableOpacity 
-        style={[styles.cardItem, { backgroundColor: palette.background, borderColor: palette.border }]} 
-        onPress={onPress} 
+      <TouchableOpacity
+        style={[styles.cardItem, { backgroundColor: palette.background, borderColor: palette.border }]}
+        onPress={onPress}
         activeOpacity={0.8}
       >
         <LinearGradient
@@ -50,21 +50,32 @@ function CardRow({
           style={StyleSheet.absoluteFill}
         />
         <View style={styles.cardItemInner}>
-          <View style={[styles.cardIconBox, { backgroundColor: stageColor + '12' }]}>
-            <Ionicons name={isCompleted ? "shield-checkmark" : "hardware-chip-outline"} size={20} color={stageColor} />
+          <View style={[styles.cardIconBox, { backgroundColor: statusColor + '12' }]}>
+            <Ionicons
+              name={isCompleted ? 'shield-checkmark' : 'hardware-chip-outline'}
+              size={20}
+              color={statusColor}
+            />
           </View>
-          
+
           <View style={styles.cardMainInfo}>
             <View style={styles.cardIdRow}>
-              <Text style={[styles.cardIdText, { color: palette.text }]} numberOfLines={1}>{card.cardId}</Text>
-              {stageName ? (
-                <View style={[styles.stageBadge, { backgroundColor: stageColor + '12', borderColor: stageColor + '30' }]}>
-                  <Text style={[styles.stageBadgeText, { color: stageColor }]} numberOfLines={1}>{stageName}</Text>
-                </View>
-              ) : null}
+              <Text style={[styles.cardIdText, { color: palette.text }]} numberOfLines={1}>
+                {card.cardId}
+              </Text>
+              <View style={[styles.stageBadge, { backgroundColor: statusColor + '12', borderColor: statusColor + '30' }]}>
+                <Text style={[styles.stageBadgeText, { color: statusColor }]} numberOfLines={1}>
+                  {statusLabel}
+                </Text>
+              </View>
             </View>
+            <Text style={[styles.cardTimeText, { color: palette.textSecondary }]}>
+              {machineUnknown
+                ? 'Machine not assigned'
+                : card.currentMachine}
+            </Text>
             <Text style={[styles.cardTimeText, { color: palette.textTertiary }]}>
-              {formatDate(card.updatedAt)} · {formatTime(card.updatedAt)}
+              {formatDate(enteredAt)} · {formatTime(enteredAt)}
             </Text>
           </View>
 
@@ -76,7 +87,7 @@ function CardRow({
             }}
             activeOpacity={0.6}
           >
-            <View style={[styles.trashIconBox, { backgroundColor: isDark ? '#450a0a' : '#FEF2F2' }]}> 
+            <View style={[styles.trashIconBox, { backgroundColor: isDark ? '#450a0a' : '#FEF2F2' }]}>
               <Ionicons name="trash-outline" size={18} color="#EF4444" />
             </View>
           </TouchableOpacity>
@@ -91,23 +102,23 @@ export default function HistoryScreen() {
   const { palette, isDark } = useTheme();
   const [showFilter, setShowFilter] = useState(false);
   const [filters, setFilters] = useState<FilterOptions>({
-    stages: [],
     sortBy: 'recent',
   });
   const [tempFilters, setTempFilters] = useState<FilterOptions>(filters);
 
-  const STAGES: { value: string; label: string; color: string }[] = [
-    { value: 'SMT', label: 'SMT', color: '#10B981' },
-    { value: 'THT', label: 'THT', color: '#2563EB' },
-    { value: 'Assembly', label: t('assembly' as any), color: palette.primary },
-    { value: 'QC', label: 'QC', color: '#8B5CF6' },
-    { value: 'Packaging', label: t('packaging' as any), color: '#EA580C' },
-    { value: 'Shipping', label: t('shipping' as any), color: '#10B981' },
+  type StatusFilter = 'all' | 'in_progress' | 'completed';
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [tempStatusFilter, setTempStatusFilter] = useState<StatusFilter>('all');
+
+  const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
+    { value: 'all', label: 'All cards' },
+    { value: 'in_progress', label: t('inProgress' as any) },
+    { value: 'completed', label: t('completed' as any) },
   ];
 
   const SORT_OPTIONS = [
-    { value: 'recent', label: t('recentScans' as any) },
-    { value: 'id_asc', label: t('idAsc' as any) },
+    { value: 'recent', label: 'Newest first' },
+    { value: 'oldest', label: 'Oldest first' },
   ];
 
   const [cards, setCards] = useState<ElectronicCard[]>([]);
@@ -121,7 +132,11 @@ export default function HistoryScreen() {
       setIsRefetching(true);
     }
     try {
-      const data = await getCards(filters);
+      const queryFilters: FilterOptions = {
+        ...filters,
+        status: statusFilter === 'all' ? undefined : statusFilter,
+      };
+      const data = await getCards(queryFilters);
       setCards(data || []);
     } catch (error) {
       console.error('fetchCards failed:', error);
@@ -129,7 +144,7 @@ export default function HistoryScreen() {
       setIsLoading(false);
       setIsRefetching(false);
     }
-  }, [filters]);
+  }, [filters, statusFilter]);
 
   useEffect(() => {
     fetchCards(true);
@@ -166,28 +181,19 @@ export default function HistoryScreen() {
 
   function openFilter() {
     setTempFilters(filters);
+    setTempStatusFilter(statusFilter);
     setShowFilter(true);
   }
 
   function applyFilters() {
     setFilters(tempFilters);
+    setStatusFilter(tempStatusFilter);
     setShowFilter(false);
   }
 
   function resetFilters() {
-    setTempFilters({ stages: [], sortBy: 'recent' });
-  }
-
-  function toggleStage(stage: string) {
-    setTempFilters(prev => {
-      const stages = prev.stages || [];
-      return {
-        ...prev,
-        stages: stages.includes(stage)
-          ? stages.filter(s => s !== stage)
-          : [...stages, stage],
-      };
-    });
+    setTempFilters({ sortBy: 'recent' });
+    setTempStatusFilter('all');
   }
 
   function formatDate(d: string) {
@@ -292,12 +298,12 @@ export default function HistoryScreen() {
           <View style={styles.filterBtnLeft}>
             <Ionicons name="options-outline" size={18} color={palette.primary} />
             <Text style={[styles.filterBtnText, { color: palette.text }]}>
-              {(filters.stages?.length || 0) > 0 ? `${filters.stages?.length} stage filters` : (t('filterSort' as any) || 'Filter & Sort')}
+              {statusFilter !== 'all' ? STATUS_OPTIONS.find((s) => s.value === statusFilter)?.label : (t('filterSort' as any) || 'Filter & Sort')}
             </Text>
           </View>
-          {(filters.stages?.length || 0) > 0 && (
+          {statusFilter !== 'all' && (
             <View style={[styles.filterBadge, { backgroundColor: palette.primary }]}>
-              <Text style={styles.filterBadgeText}>{filters.stages?.length}</Text>
+              <Text style={styles.filterBadgeText}>1</Text>
             </View>
           )}
           <Ionicons name="chevron-down" size={16} color={palette.textTertiary} />
@@ -322,7 +328,6 @@ export default function HistoryScreen() {
             t={t}
             formatDate={formatDate}
             formatTime={formatTime}
-            stages={STAGES}
           />
         )}
         refreshControl={
@@ -370,19 +375,19 @@ export default function HistoryScreen() {
               </TouchableOpacity>
             </View>
 
-            <Text style={[styles.filterSectionTitle, { color: palette.text }]}>{t('filterByStage' as any)}</Text>
+            <Text style={[styles.filterSectionTitle, { color: palette.text }]}>Status</Text>
             <View style={styles.stageRow}>
-              {STAGES.map(s => {
-                const active = (tempFilters.stages || []).includes(s.value);
+              {STATUS_OPTIONS.map((s) => {
+                const active = tempStatusFilter === s.value;
                 return (
                   <TouchableOpacity
                     key={s.value}
-                    style={[styles.stagePillFilter, { 
-                      backgroundColor: active ? s.color : palette.background,
-                      borderColor: active ? s.color : palette.border,
-                      borderWidth: 1
+                    style={[styles.stagePillFilter, {
+                      backgroundColor: active ? palette.primary : palette.background,
+                      borderColor: active ? palette.primary : palette.border,
+                      borderWidth: 1,
                     }]}
-                    onPress={() => toggleStage(s.value)}
+                    onPress={() => setTempStatusFilter(s.value)}
                     activeOpacity={0.8}
                   >
                     <Text style={[styles.stagePillFilterText, { color: active ? colors.white : palette.textSecondary }]}>

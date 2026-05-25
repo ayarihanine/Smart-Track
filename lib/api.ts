@@ -191,10 +191,18 @@ export async function getCards(filters?: FilterOptions): Promise<ElectronicCard[
       query = query.in('current_machine', filters.stages);
     }
 
+    if (filters?.status) {
+      query = query.eq('status', filters.status);
+    }
+
     if (filters?.sortBy === 'recent') {
-      query = query.order('updated_at', { ascending: false });
+      query = query.order('created_at', { ascending: false });
+    } else if (filters?.sortBy === 'oldest') {
+      query = query.order('created_at', { ascending: true });
     } else if (filters?.sortBy === 'id_asc') {
       query = query.order('card_id', { ascending: true });
+    } else if (filters?.sortBy === 'stage_order') {
+      query = query.order('updated_at', { ascending: false });
     }
 
     const { data, error } = await query.limit(100);
@@ -1150,16 +1158,16 @@ export function getMockCard(cardId: string): ElectronicCard {
 }
 
 export async function getStuckCards(cards: ElectronicCard[], thresholdHours: number): Promise<ElectronicCard[]> {
-  // Returns cards that have been stuck longer than thresholdHours based on active elapsed time
   const stuckCards: ElectronicCard[] = [];
   for (const card of cards) {
+    if (card.status === 'completed' || card.cardId?.startsWith('TEST-')) continue;
     const timeInactiveMs = getActiveElapsedMs(
       card.stageEnteredAt || card.updatedAt,
       8,
-      17
+      16
     );
     const hoursStuck = timeInactiveMs / (1000 * 60 * 60);
-    if (hoursStuck >= thresholdHours && card.status !== 'completed') {
+    if (hoursStuck >= thresholdHours) {
       stuckCards.push({ ...card, progressPercent: Math.min(card.progressPercent, 100) });
     }
   }
@@ -2137,28 +2145,239 @@ function mapDbSensorEvent(row: Record<string, unknown>): SensorEvent {
   };
 }
 
-// Fetches the latest state per sensor using a single efficient query (Step 1A)
-export async function fetchLatestSensorStates(): Promise<SensorState[]> {
+export interface SensorReading {
+  position: 1 | 2 | 3;
+  sensorId: string;
+  state: 'HIGH' | 'LOW' | 'UNKNOWN';
+  counter: number;
+  recordedAt: string | null;
+  gpioPin: number;
+}
+
+export interface ProductionKPIs {
+  cardsProduced: number;
+  cardsGood: number;
+  cardsExpected: number;
+  totalLosses: number;
+  lossZone1to2: number;
+  lossZone2to3: number;
+  trgPercent: number;
+  trsPercent: number;
+  machineName: string;
+  shiftStart: string;
+  shiftEnd: string;
+}
+
+function getPosition(sensorId: string): 1 | 2 | 3 | null {
+  if (sensorId === 'capteur1' || sensorId === 'sensor1') return 1;
+  if (sensorId === 'capteur2' || sensorId === 'sensor2') return 2;
+  if (sensorId === 'capteur3' || sensorId === 'sensor3') return 3;
+  return null;
+}
+
+export function sensorIdToPosition(sensorId: string): 1 | 2 | 3 | null {
+  return getPosition(sensorId);
+}
+
+function emptyReading(position: 1 | 2 | 3): SensorReading {
+  return {
+    position,
+    sensorId: `capteur${position}`,
+    state: 'UNKNOWN',
+    counter: 0,
+    recordedAt: null,
+    gpioPin: position === 1 ? 17 : position === 2 ? 26 : 16,
+  };
+}
+
+function getEmptySensors(): SensorReading[] {
+  return [emptyReading(1), emptyReading(2), emptyReading(3)];
+}
+
+export async function fetchLatestSensorStates(): Promise<SensorReading[]> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return getEmptySensors();
+
+  const { data, error } = await supabase
+    .from('v_latest_sensor_states')
+    .select('sensor_id, state, counter, recorded_at, gpio_pin')
+    .in('sensor_id', [
+      'capteur1', 'capteur2', 'capteur3',
+      'sensor1', 'sensor2', 'sensor3',
+    ]);
+
+  if (error || !data || data.length === 0) return getEmptySensors();
+
+  const positionMap: Record<number, SensorReading> = {};
+
+  for (const row of data) {
+    const position = getPosition(row.sensor_id);
+    if (!position) continue;
+
+    const existing = positionMap[position];
+    const rowDate = row.recorded_at ? new Date(row.recorded_at).getTime() : 0;
+    const existDate = existing?.recordedAt
+      ? new Date(existing.recordedAt).getTime()
+      : -1;
+
+    if (!existing || rowDate > existDate) {
+      positionMap[position] = {
+        position,
+        sensorId: row.sensor_id,
+        state: row.state as 'HIGH' | 'LOW',
+        counter: row.counter ?? 0,
+        recordedAt: row.recorded_at,
+        gpioPin: row.gpio_pin ?? 0,
+      };
+    }
+  }
+
+  return [
+    positionMap[1] ?? emptyReading(1),
+    positionMap[2] ?? emptyReading(2),
+    positionMap[3] ?? emptyReading(3),
+  ];
+}
+
+export function computeKPIs(
+  sensors: SensorReading[],
+  config: {
+    nb_cartes_attendues: number;
+    machine_name: string;
+    shift_start: string;
+    shift_end: string;
+  }
+): ProductionKPIs {
+  const s1 = sensors.find((s) => s.position === 1);
+  const s2 = sensors.find((s) => s.position === 2);
+  const s3 = sensors.find((s) => s.position === 3);
+
+  const c1 = s1?.counter ?? 0;
+  const c2 = s2?.counter ?? 0;
+  const c3 = s3?.counter ?? 0;
+
+  const lossZone1to2 = Math.max(0, c1 - c2);
+  const lossZone2to3 = Math.max(0, c2 - c3);
+  const totalLosses = lossZone1to2 + lossZone2to3;
+  const cardsProduced = c3;
+  const cardsGood = Math.max(0, cardsProduced - totalLosses);
+  const cardsExpected = config.nb_cartes_attendues;
+
+  const trgPercent = cardsExpected > 0
+    ? Math.min(100, Math.round((cardsGood / cardsExpected) * 100))
+    : 0;
+  const trsPercent = cardsProduced > 0
+    ? Math.min(100, Math.round((cardsGood / cardsProduced) * 100))
+    : 0;
+
+  return {
+    cardsProduced,
+    cardsGood,
+    cardsExpected,
+    totalLosses,
+    lossZone1to2,
+    lossZone2to3,
+    trgPercent,
+    trsPercent,
+    machineName: config.machine_name,
+    shiftStart: config.shift_start,
+    shiftEnd: config.shift_end,
+  };
+}
+
+export interface SensorEventCountToday {
+  position: 1 | 2 | 3;
+  label: string;
+  count: number;
+}
+
+export async function fetchSensorEventCountsToday(): Promise<SensorEventCountToday[]> {
+  const supabase = getSupabaseClient();
+  const labels: Record<number, string> = { 1: 'Capteur 1', 2: 'Capteur 2', 3: 'Capteur 3' };
+  const empty = ([1, 2, 3] as const).map((position) => ({
+    position,
+    label: labels[position],
+    count: 0,
+  }));
+
+  if (!supabase) return empty;
+
+  const start = new Date();
+  start.setUTCHours(0, 0, 0, 0);
+
+  const { data, error } = await supabase
+    .from('sensor_events')
+    .select('sensor_id')
+    .gte('recorded_at', start.toISOString())
+    .in('sensor_id', [
+      'capteur1', 'capteur2', 'capteur3',
+      'sensor1', 'sensor2', 'sensor3',
+    ]);
+
+  if (error || !data) return empty;
+
+  const counts: Record<number, number> = { 1: 0, 2: 0, 3: 0 };
+  for (const row of data) {
+    const position = getPosition(row.sensor_id);
+    if (position) counts[position] += 1;
+  }
+
+  return ([1, 2, 3] as const).map((position) => ({
+    position,
+    label: labels[position],
+    count: counts[position],
+  }));
+}
+
+export async function fetchSensorEventsLast24h(): Promise<SensorEvent[]> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+  const { data, error } = await supabase
+    .from('sensor_events')
+    .select('*')
+    .gte('recorded_at', since)
+    .in('sensor_id', [
+      'capteur1', 'capteur2', 'capteur3',
+      'sensor1', 'sensor2', 'sensor3',
+    ])
+    .order('recorded_at', { ascending: true })
+    .limit(500);
+
+  if (error || !data) return [];
+  return data.map(mapDbSensorEvent);
+}
+
+export interface DailyReportSummary {
+  id: number;
+  report_type: string;
+  status: string;
+  period_start: string;
+  period_end?: string;
+  total_produced: number;
+  total_good: number;
+  total_bad: number;
+  trg: number;
+  trs: number;
+  total_losses: number;
+  created_at: string;
+}
+
+export async function fetchDailyReportSummaries(limit = 10): Promise<DailyReportSummary[]> {
   const supabase = getSupabaseClient();
   if (!supabase) return [];
 
   const { data, error } = await supabase
-    .from('sensor_events')
-    .select('sensor_id, state, counter, recorded_at, gpio_pin')
-    .neq('sensor_id', 'SYSTEM')
-    .in('sensor_id', ['capteur1', 'capteur2', 'capteur3'])
-    .order('recorded_at', { ascending: false })
-    .limit(3);
+    .from('report_summaries')
+    .select('*')
+    .eq('report_type', 'daily')
+    .order('created_at', { ascending: false })
+    .limit(limit);
 
   if (error || !data) return [];
-
-  // Keep only the first occurrence of each sensor_id
-  const seen = new Set<string>();
-  return data.filter(row => {
-    if (seen.has(row.sensor_id)) return false;
-    seen.add(row.sensor_id);
-    return true;
-  });
+  return data as DailyReportSummary[];
 }
 
 // Fetches recent sensor event history (newest first, no SYSTEM rows)

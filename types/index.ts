@@ -136,7 +136,7 @@ export interface AppSettings {
 export interface FilterOptions {
   currentMachine?: string;
   currentMachineStatus?: 'in_progress' | 'completed' | 'blocked';
-  sortBy: 'recent' | 'stage_order' | 'id_asc';
+  sortBy: 'recent' | 'oldest' | 'stage_order' | 'id_asc';
   status?: CardStatus;
   stages?: string[];
 }

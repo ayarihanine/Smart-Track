@@ -96,7 +96,7 @@ export default function CardDetailScreen() {
     if (!card || card.status === 'completed') return false;
     const ref = card.stageEnteredAt || card.updatedAt;
     if (!ref) return false;
-    const activeMs = getActiveElapsedMs(ref, 8, 17);
+    const activeMs = getActiveElapsedMs(ref, 8, 16);
     return activeMs / (1000 * 60 * 60) >= 36;
   }, [card]);
 
@@ -688,4 +688,6 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center', ...shadows.sm,
   },
   confirmBtnText: { ...typography.bodyBold, color: '#fff', letterSpacing: 0.3 },
+  actionLink: { paddingVertical: spacing.xs, paddingHorizontal: spacing.sm },
+  actionLinkText: { ...typography.smallBold },
 });

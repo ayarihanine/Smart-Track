@@ -243,7 +243,7 @@ export default function HomeScreen() {
   
   const delayedCards = (cards || []).filter(c => {
     const referenceTime = c.stageEnteredAt || c.updatedAt;
-    const activeElapsedMs = getActiveElapsedMs(referenceTime, 8, 17);
+    const activeElapsedMs = getActiveElapsedMs(referenceTime, 8, 16);
     return c.status !== 'completed' && activeElapsedMs > thresholdMs;
   }).sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
 
@@ -464,7 +464,7 @@ export default function HomeScreen() {
               {t('stuckFor')} {stuckThreshold}h
             </Text>
             {delayedCards.map(card => {
-              const hoursStuck = Math.max(1, Math.floor(getActiveElapsedMs(card.stageEnteredAt || card.updatedAt, 8, 17) / (1000 * 60 * 60)));
+              const hoursStuck = Math.max(1, Math.floor(getActiveElapsedMs(card.stageEnteredAt || card.updatedAt, 8, 16) / (1000 * 60 * 60)));
               return (
                 <View key={card.id} style={{ position: 'relative' }}>
                   <CardListItem

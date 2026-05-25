@@ -90,6 +90,7 @@ function RootNavigator() {
         headerTitleStyle: { fontWeight: '700' },
       }}
     >
+      <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen name="auth" />
       <Stack.Screen name="(tabs)" />
       <Stack.Screen

@@ -8,16 +8,18 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
 import { recordScan, getCard, getCurrentBatchId } from '@/lib/api';
+import { supabase } from '@/lib/supabase';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
 import { useOfflineStore } from '@/store/offlineStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { SyncBanner } from '@/components/SyncBanner';
+import { ZebraScanPanel } from '@/components/ZebraScanPanel';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
 const QUICK_IDS = ['CARD00001', 'CARD00002', 'CARD99887', 'CARD55443', 'CARD12345'];
 
-type ScanMode = 'camera' | 'manual';
+type ScanMode = 'camera' | 'manual' | 'zebra';
 type QueuedBatchScan = { cardId: string; stage: string; productName?: string; batchId?: string | null };
 
 export default function ScanScreen() {
@@ -59,6 +61,27 @@ export default function ScanScreen() {
   async function processTrack(id: string, source: string) {
     setScanning(true);
     try {
+      const { data: existing, error: checkError } = await supabase
+        .from('electronic_cards')
+        .select('id, status, scan_points')
+        .eq('card_id', id.trim())
+        .single()
+
+      if (existing) {
+        if (existing.scan_points && existing.scan_points >= 2) {
+          Alert.alert('⚠️ Duplicate Scan', `Card ${id} already scanned ${existing.scan_points} times.`)
+          setScanning(false)
+          return
+        }
+        await supabase.from('electronic_cards').update({
+          scan_points: (existing.scan_points || 0) + 1,
+          updated_at: new Date().toISOString()
+        }).eq('id', existing.id)
+        Alert.alert('✅ Updated', `Card ${id} scan count incremented.`)
+        setScanning(false)
+        return
+      }
+
       // 1. Try to find in real database
       const card = await getCard(id);
       const stage = card?.currentMachine || 'Stage 1: Assembly';
@@ -222,6 +245,7 @@ export default function ScanScreen() {
       case 'camera': return t('qrScanner');
 
       case 'manual': return t('manualRegistry');
+      case 'zebra': return 'Zebra Scanner';
       default: return '';
     }
   };
@@ -246,14 +270,14 @@ export default function ScanScreen() {
             </Text>
           </TouchableOpacity>
           <View style={styles.modeToggle}>
-            {(['camera', 'manual'] as ScanMode[]).map((m) => (
+            {(['camera', 'manual', 'zebra'] as ScanMode[]).map((m) => (
               <TouchableOpacity
                 key={m}
                 onPress={() => setMode(m)}
                 style={[styles.modeBtn, mode === m && styles.modeBtnActive]}
               >
                 <Ionicons
-                  name={m === 'camera' ? 'camera' : 'keypad'}
+                  name={m === 'camera' ? 'camera' : m === 'zebra' ? 'barcode' : 'keypad'}
                   size={18}
                   color={mode === m ? colors.white : palette.textTertiary}
                 />
@@ -264,6 +288,8 @@ export default function ScanScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+        {mode === 'zebra' && <ZebraScanPanel />}
+
         {mode === 'camera' && (
           <View style={styles.centerContent}>
             <View style={styles.viewfinderContainer}>

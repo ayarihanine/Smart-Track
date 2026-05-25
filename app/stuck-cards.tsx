@@ -1,273 +1,217 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  RefreshControl, Alert, ActivityIndicator,
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  RefreshControl,
+  TouchableOpacity,
+  Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import Animated, { FadeInDown } from 'react-native-reanimated';
-import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
-import { useTranslation } from '@/hooks/useTranslation';
-import { useTheme } from '@/components/ThemeProvider';
-import { getCards, alertTestingTeam } from '@/lib/api';
-import { useSettingsStore } from '@/store/settingsStore';
-import { ElectronicCard } from '@/types';
+
+import { useStuckCards } from '@/hooks/useStuckCards';
 import { getSupabaseClient } from '@/lib/supabase';
-import { getActiveElapsedMs } from '@/store/alertsStore';
 
 export default function StuckCardsScreen() {
-  const { t } = useTranslation();
-  const { palette } = useTheme();
-  const stuckThreshold = useSettingsStore(s => s.stuckCardThresholdHours);
-  const [alertingId, setAlertingId] = useState<string | null>(null);
+  const { stuckCards, loading, refetch } = useStuckCards(30);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const [alertSent, setAlertSent] = useState<Record<string, boolean>>({});
-  const [cards, setCards] = useState<ElectronicCard[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-
-  const fetchCards = async () => {
-    try {
-      const data = await getCards();
-      setCards(data || []);
-    } catch (error) {
-      console.error('fetchCards failed:', error);
-    } finally {
-      setIsLoading(false);
-    }
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await refetch();
+    setRefreshing(false);
   };
 
-  useEffect(() => {
-    fetchCards();
+  const handleResolve = (cardId: string) => {
+    Alert.alert('Resolve Stuck Card', `Mark ${cardId} as manually resolved?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Resolve',
+        style: 'destructive',
+        onPress: async () => {
+          const supabase = getSupabaseClient();
+          if (!supabase) return;
 
-    const supabase = getSupabaseClient();
-    if (!supabase) return;
+          try {
+            const { error } = await supabase
+              .from('electronic_cards')
+              .update({
+                status: 'on_hold',
+                current_machine_status: 'completed',
+                updated_at: new Date().toISOString(),
+              })
+              .eq('card_id', cardId);
 
-    const channel = supabase
-      .channel('stuck-cards-live')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'electronic_cards' },
-        () => {
-          fetchCards();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, []);
-
-  const thresholdMs = Math.max(36, stuckThreshold) * 60 * 60 * 1000;
-  const stuckCards = (cards || []).filter(c => {
-    const timeInactive = getActiveElapsedMs(
-      c.stageEnteredAt || c.updatedAt,
-      8,
-      17
-    );
-    return c.status !== 'completed' && timeInactive > thresholdMs;
-  }).sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
-
-  const handleAlertTesting = async (card: ElectronicCard) => {
-    if (alertSent[card.cardId]) return;
-    setAlertingId(card.cardId);
-    const ok = await alertTestingTeam(card.cardId, card.currentStage);
-    setAlertingId(null);
-    if (ok) {
-      setAlertSent(prev => ({ ...prev, [card.cardId]: true }));
-      Alert.alert(t('success'), t('alertSent'));
-    } else {
-      Alert.alert(t('error'), "Failed to send alert.");
-    }
-  };
-
-  const getStuckDuration = (card: ElectronicCard) => {
-    const activeMs = getActiveElapsedMs(
-      card.stageEnteredAt || card.updatedAt,
-      8,
-      17
-    );
-    const hours = Math.floor(activeMs / (1000 * 60 * 60));
-    return t('stuckDuration').replace('{{hours}}', hours.toString());
+            if (error) throw error;
+            Alert.alert('Resolved', `${cardId} marked as resolved`);
+            refetch();
+          } catch {
+            Alert.alert('Error', 'Failed to update card status');
+          }
+        },
+      },
+    ]);
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
-      {/* Header */}
-      <View style={[styles.header, { backgroundColor: palette.background, borderBottomColor: palette.border }]}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={24} color={palette.text} />
+    <SafeAreaView style={styles.safe} edges={['top']}>
+      <View style={styles.header}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <Ionicons name="arrow-back" size={22} color="#111827" />
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: palette.text }]}>{t('stuckCardsTitle')}</Text>
-        <View style={{ width: 40 }} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.title}>Stuck Cards</Text>
+          <Text style={styles.subtitle}>Cards stuck &gt; 30 minutes</Text>
+        </View>
       </View>
 
-      <ScrollView 
-        style={styles.scroll} 
-        contentContainerStyle={styles.scrollContent}
-        refreshControl={<RefreshControl refreshing={isLoading} onRefresh={fetchCards} tintColor={colors.primary} />}
-      >
-        {!isLoading && stuckCards.length > 0 ? (
-          <View style={[styles.summaryCard, { backgroundColor: palette.background, borderColor: palette.border }]}> 
-            <View>
-              <Text style={[styles.summaryKicker, { color: palette.textSecondary }]}>Monitoring</Text>
-              <Text style={[styles.summaryValue, { color: palette.text }]}>{stuckCards.length} cards need action</Text>
+      {loading && stuckCards.length === 0 ? (
+        <View style={styles.center}>
+          <ActivityIndicator color="#3b82f6" />
+          <Text style={styles.loadingText}>Loading stuck cards...</Text>
+        </View>
+      ) : (
+        <ScrollView
+          style={styles.container}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#3b82f6" />
+          }
+        >
+          {stuckCards.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyIcon}>✓</Text>
+              <Text style={styles.emptyText}>Production Flowing Smoothly</Text>
+              <Text style={styles.emptySubtext}>No cards are currently stuck in any stage</Text>
             </View>
-            <View style={[styles.summaryPill, { backgroundColor: '#FEE2E2' }]}>
-              <Text style={styles.summaryPillText}>Threshold {Math.max(36, stuckThreshold)}h</Text>
-            </View>
-          </View>
-        ) : null}
-
-        {isLoading ? (
-          <View style={styles.centerContainer}>
-            <ActivityIndicator size="large" color={colors.primary} />
-          </View>
-        ) : stuckCards.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <View style={[styles.emptyIconContainer, { backgroundColor: palette.backgroundTertiary }]}>
-              <Ionicons name="checkmark-circle-outline" size={64} color={colors.success} />
-            </View>
-            <Text style={[styles.emptyTitle, { color: palette.text }]}>All Clear!</Text>
-            <Text style={[styles.emptySubtitle, { color: palette.textSecondary }]}>
-              No cards are currently stuck beyond the {stuckThreshold}h threshold.
-            </Text>
-          </View>
-        ) : (
-          stuckCards.map((card, index) => (
-            <Animated.View 
-              key={card.id} 
-              entering={FadeInDown.delay(index * 100)}
-              style={[styles.card, { backgroundColor: palette.background, borderColor: palette.border }]}
-            >
-              <View style={styles.cardHeader}>
-                <View style={[styles.cardIdBadge, { backgroundColor: colors.primary + '15' }]}>
-                  <Text style={[styles.cardIdText, { color: colors.primary }]}>{card.cardId}</Text>
-                </View>
-                <View style={[styles.stuckBadge, { backgroundColor: colors.error + '15' }]}>
-                  <Ionicons name="alert-circle" size={14} color={colors.error} />
-                  <Text style={[styles.stuckBadgeText, { color: colors.error }]}>
-                    {getStuckDuration(card)}
-                  </Text>
-                </View>
-              </View>
-
-              <Text style={[styles.productName, { color: palette.text }]}>{card.productName || t('unknownProduct')}</Text>
-              
-              <View style={styles.infoRow}>
-                <Ionicons name="git-network-outline" size={16} color={palette.textSecondary} />
-                <Text style={[styles.infoText, { color: palette.textSecondary }]}>
-                  {t('currentStage')}: <Text style={{ color: palette.text, fontWeight: '600' }}>{card.currentStage}</Text>
+          ) : (
+            <>
+              <View style={styles.alertBanner}>
+                <Text style={styles.alertText}>
+                  {stuckCards.length} card(s) require attention
                 </Text>
               </View>
 
-              <View style={[styles.reasonBox, { backgroundColor: palette.backgroundSecondary, borderColor: palette.border }]}>
-                <View style={styles.reasonHeader}>
-                  <Ionicons name="help-circle-outline" size={16} color={colors.warning} />
-                  <Text style={[styles.reasonTitle, { color: colors.warning }]}>{t('stuckReason')}</Text>
-                </View>
-                <Text style={[styles.reasonText, { color: palette.text }]}> 
-                  {card.qualityIssues || card.missingItems || t('noReasonReported')}
-                </Text>
-              </View>
+              {stuckCards.map((card) => (
+                <View
+                  key={card.id}
+                  style={[
+                    styles.card,
+                    { borderColor: card.severity === 'critical' ? '#ef4444' : '#f59e0b' },
+                  ]}
+                >
+                  <View style={styles.cardHeader}>
+                    <View>
+                      <Text style={styles.cardId}>{card.card_id}</Text>
+                      <Text style={styles.cardStage}>{card.stage}</Text>
+                    </View>
+                    <View
+                      style={[
+                        styles.badge,
+                        { backgroundColor: card.severity === 'critical' ? '#fee2e2' : '#fef3c7' },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.badgeText,
+                          { color: card.severity === 'critical' ? '#dc2626' : '#d97706' },
+                        ]}
+                      >
+                        {card.minutesAtStage}m
+                      </Text>
+                    </View>
+                  </View>
 
-              <TouchableOpacity style={[styles.viewBtn, { borderColor: palette.border }]} onPress={() => router.push(`/card/${card.cardId}`)}>
-                <Text style={[styles.viewBtnText, { color: palette.text }]}>Open Card Details</Text>
-                <Ionicons name="arrow-forward" size={16} color={palette.textSecondary} />
-              </TouchableOpacity>
-
-              <TouchableOpacity 
-                style={[
-                  styles.alertBtn, 
-                  { backgroundColor: alertSent[card.cardId] ? '#A0AEC0' : colors.primary }
-                ]}
-                onPress={() => handleAlertTesting(card)}
-                disabled={alertingId === card.cardId || !!alertSent[card.cardId]}
-              >
-                {alertingId === card.cardId ? (
-                  <ActivityIndicator size="small" color={colors.white} />
-                ) : (
-                  <>
-                    <Ionicons 
-                      name={alertSent[card.cardId] ? "checkmark-circle-outline" : "megaphone-outline"} 
-                      size={18} 
-                      color={colors.white} 
-                    />
-                    <Text style={styles.alertBtnText}>
-                      {alertSent[card.cardId] ? 'Alert Sent ✓' : t('alertTestingTeam')}
+                  <View style={styles.cardInfo}>
+                    <Text style={styles.infoText}>
+                      Entered: {new Date(card.enteredAt).toLocaleTimeString('fr-FR')}
                     </Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </Animated.View>
-          ))
-        )}
-      </ScrollView>
+                    {card.severity === 'critical' && (
+                      <Text style={styles.criticalText}>Critical: Over 1 hour</Text>
+                    )}
+                  </View>
+
+                  <View style={styles.actions}>
+                    <TouchableOpacity
+                      style={styles.actionBtn}
+                      onPress={() => handleResolve(card.card_id)}
+                    >
+                      <Text style={styles.actionBtnText}>Resolve</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.actionBtn, styles.actionBtnSecondary]}
+                      onPress={() => router.push(`/card/${card.card_id}` as never)}
+                    >
+                      <Text style={[styles.actionBtnText, styles.actionBtnSecondaryText]}>Details</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))}
+            </>
+          )}
+        </ScrollView>
+      )}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: '#f8f9fa' },
   container: { flex: 1 },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
+  loadingText: { color: '#6b7280' },
   header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: spacing.md, paddingVertical: spacing.md,
+    backgroundColor: '#fff',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     borderBottomWidth: 1,
-  },
-  backBtn: { padding: 4 },
-  headerTitle: { ...typography.h4, fontWeight: '700' },
-  scroll: { flex: 1 },
-  scrollContent: { padding: spacing.md, paddingBottom: spacing.xxxl },
-  summaryCard: {
-    borderWidth: 1,
-    borderRadius: borderRadius.xl,
-    padding: spacing.md,
-    marginBottom: spacing.md,
+    borderBottomColor: '#e5e7eb',
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 8,
   },
-  summaryKicker: { ...typography.tiny, fontWeight: '800', textTransform: 'uppercase' },
-  summaryValue: { ...typography.bodyBold, marginTop: 4 },
-  summaryPill: { paddingHorizontal: spacing.sm, paddingVertical: 6, borderRadius: borderRadius.full },
-  summaryPillText: { ...typography.tiny, fontWeight: '800', color: '#B91C1C' },
-  centerContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 400 },
-  emptyContainer: { alignItems: 'center', justifyContent: 'center', minHeight: 400, padding: spacing.xl },
-  emptyIconContainer: { width: 120, height: 120, borderRadius: 60, alignItems: 'center', justifyContent: 'center', marginBottom: spacing.lg },
-  emptyTitle: { ...typography.h3, marginBottom: spacing.sm },
-  emptySubtitle: { ...typography.body, textAlign: 'center', opacity: 0.7 },
+  backBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+  title: { fontSize: 22, fontWeight: '700' },
+  subtitle: { fontSize: 14, color: '#6b7280', marginTop: 2 },
+  emptyState: { padding: 40, alignItems: 'center', marginTop: 40 },
+  emptyIcon: { fontSize: 48, marginBottom: 12, color: '#22c55e' },
+  emptyText: { fontSize: 18, fontWeight: '600', marginBottom: 4 },
+  emptySubtext: { color: '#6b7280', textAlign: 'center' },
+  alertBanner: { backgroundColor: '#fef2f2', padding: 12, margin: 16, borderRadius: 8 },
+  alertText: { color: '#dc2626', fontWeight: '600', textAlign: 'center' },
   card: {
-    borderRadius: borderRadius.xl, padding: spacing.lg, marginBottom: spacing.md,
-    borderWidth: 1, ...shadows.sm,
+    backgroundColor: '#fff',
+    marginHorizontal: 16,
+    marginBottom: 12,
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 2,
   },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
-  cardIdBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: borderRadius.md },
-  cardIdText: { ...typography.smallBold },
-  stuckBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 4, borderRadius: borderRadius.md },
-  stuckBadgeText: { ...typography.tiny, fontWeight: '700' },
-  productName: { ...typography.h4, marginBottom: spacing.sm },
-  infoRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: spacing.md },
-  infoText: { ...typography.caption },
-  reasonBox: { padding: spacing.md, borderRadius: borderRadius.lg, borderWidth: 1, marginBottom: spacing.lg },
-  reasonHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
-  reasonTitle: { ...typography.tiny, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5 },
-  reasonText: { ...typography.caption, lineHeight: 20 },
-  viewBtn: {
-    height: 42,
-    borderRadius: borderRadius.lg,
-    borderWidth: 1,
+  cardHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: spacing.md,
-    marginBottom: spacing.md,
+    alignItems: 'center',
+    marginBottom: 12,
   },
-  viewBtnText: { ...typography.smallBold },
-  alertBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 8, paddingVertical: 12, borderRadius: borderRadius.lg,
-    ...shadows.md,
+  cardId: { fontSize: 16, fontWeight: '700' },
+  cardStage: { fontSize: 13, color: '#6b7280', marginTop: 2 },
+  badge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
+  badgeText: { fontWeight: '700', fontSize: 12 },
+  cardInfo: { marginBottom: 12 },
+  infoText: { fontSize: 13, color: '#374151', marginBottom: 4 },
+  criticalText: { color: '#dc2626', fontSize: 12, fontWeight: '600' },
+  actions: { flexDirection: 'row', gap: 8 },
+  actionBtn: {
+    flex: 1,
+    backgroundColor: '#3b82f6',
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
   },
-  alertBtnText: { ...typography.bodyBold, color: colors.white },
+  actionBtnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+  actionBtnSecondary: { backgroundColor: '#f3f4f6' },
+  actionBtnSecondaryText: { color: '#374151' },
 });

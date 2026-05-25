@@ -5,6 +5,7 @@ import { RealtimeChannel } from '@supabase/supabase-js';
 
 interface AuthState {
   user: UserProfile | null;
+  profile: { role: UserRole } | null;
   isLoading: boolean;
   isAuthenticated: boolean;
   setUser: (user: UserProfile | null) => void;
@@ -27,10 +28,16 @@ function isInvalidRefreshTokenError(error: unknown) {
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
+  profile: null,
   isLoading: true,
   isAuthenticated: false,
 
-  setUser: (user) => set({ user, isAuthenticated: !!user, isLoading: false }),
+  setUser: (user) => set({
+    user,
+    profile: user ? { role: user.role } : null,
+    isAuthenticated: !!user,
+    isLoading: false,
+  }),
   setLoading: (loading) => set({ isLoading: loading }),
 
   refreshProfile: async (userId: string) => {
@@ -52,18 +59,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       if (data) {
-        set((state) => ({
-          user: {
-            ...state.user,
-            id: data.id,
-            email: data.email,
-            displayName: data.display_name || data.displayName || state.user?.displayName || '',
-            role: data.role as UserRole,
-            avatarUrl: data.avatar_url || data.avatarUrl,
-            createdAt: data.created_at || data.createdAt,
-          } as UserProfile,
+        const current = get().user
+        const updatedUser = {
+          ...current,
+          id: data.id,
+          email: data.email,
+          displayName: data.display_name || data.displayName || current?.displayName || '',
+          role: data.role as UserRole,
+          avatarUrl: data.avatar_url || data.avatarUrl,
+          createdAt: data.created_at || data.createdAt,
+        } as UserProfile
+        set({
+          user: updatedUser,
+          profile: { role: updatedUser.role },
           isAuthenticated: true,
-        }));
+        });
       }
     } catch (err) {
       console.error('Error refreshing profile:', err);
@@ -95,15 +105,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           (payload) => {
             console.log('Profile update received:', payload.new);
             const data = payload.new;
-            set((state) => ({
-              user: state.user ? {
+            set((state) => {
+              const updatedUser = state.user ? {
                 ...state.user,
                 displayName: data.display_name || data.displayName || state.user.displayName,
                 role: data.role as UserRole,
                 avatarUrl: data.avatar_url || data.avatarUrl,
                 email: data.email || state.user.email,
               } : null
-            }));
+              return {
+                user: updatedUser,
+                profile: updatedUser ? { role: updatedUser.role } : null,
+              }
+            });
           }
         )
         .subscribe();
@@ -114,7 +128,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (isInvalidRefreshTokenError(sessionError)) {
         console.warn('Supabase session refresh failed. Clearing the stale local session and continuing signed out.');
         await clearPersistedSupabaseSession();
-        set({ user: null, isAuthenticated: false, isLoading: false });
+        set({ user: null, profile: null, isAuthenticated: false, isLoading: false });
         return;
       }
 
@@ -127,16 +141,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const user = session.user;
       
       // Set initial user from metadata as fallback
+      const initialUser = {
+        id: user.id,
+        email: user.email || '',
+        displayName: user.user_metadata?.displayName || user.email?.split('@')[0] || 'User',
+        role: user.user_metadata?.role as UserRole || 'operator',
+        badgeId: user.user_metadata?.badgeId,
+        department: user.user_metadata?.department,
+        avatarUrl: user.user_metadata?.avatarUrl,
+      }
       set({
-        user: {
-          id: user.id,
-          email: user.email || '',
-          displayName: user.user_metadata?.displayName || user.email?.split('@')[0] || 'User',
-          role: user.user_metadata?.role as UserRole || 'operator',
-          badgeId: user.user_metadata?.badgeId,
-          department: user.user_metadata?.department,
-          avatarUrl: user.user_metadata?.avatarUrl,
-        },
+        user: initialUser,
+        profile: { role: initialUser.role },
         isAuthenticated: true,
       });
 
@@ -154,14 +170,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         const user = session.user;
         
         if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
+          const sessionUser = {
+            id: user.id,
+            email: user.email || '',
+            displayName: user.user_metadata?.displayName || user.email?.split('@')[0] || 'User',
+            role: user.user_metadata?.role as UserRole || 'operator',
+            avatarUrl: user.user_metadata?.avatarUrl,
+          }
           set({
-            user: {
-              id: user.id,
-              email: user.email || '',
-              displayName: user.user_metadata?.displayName || user.email?.split('@')[0] || 'User',
-              role: user.user_metadata?.role as UserRole || 'operator',
-              avatarUrl: user.user_metadata?.avatarUrl,
-            },
+            user: sessionUser,
+            profile: { role: sessionUser.role },
             isAuthenticated: true,
           });
 
@@ -175,7 +193,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           profileSubscription.unsubscribe();
           profileSubscription = null;
         }
-        set({ user: null, isAuthenticated: false });
+        set({ user: null, profile: null, isAuthenticated: false });
       }
     });
   },
@@ -244,6 +262,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (supabase) {
       await supabase.auth.signOut();
     }
-    set({ user: null, isAuthenticated: false });
+    set({ user: null, profile: null, isAuthenticated: false });
   },
 }));

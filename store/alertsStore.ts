@@ -55,13 +55,13 @@ export function getActiveElapsedMs(
   let weekdaysOnly = true;
   let holidays: string[] = [];
   let shiftStartHour = 8;
-  let shiftEndHour = 17;
+  let shiftEndHour = 16;
   let breakStartHour: number | undefined = undefined;
   let breakEndHour: number | undefined = undefined;
 
   if (typeof shiftStartOrConfig === 'number') {
     shiftStartHour = shiftStartOrConfig;
-    shiftEndHour = shiftEnd ?? 17;
+    shiftEndHour = shiftEnd ?? 16;
     weekdaysOnly = true;
   } else if (shiftStartOrConfig && typeof shiftStartOrConfig === 'object') {
     shiftStartHour = shiftStartOrConfig.shiftStartHour;
@@ -198,14 +198,20 @@ export const useAlertsStore = create<AlertsState>((set, get) => ({
     const existingAlerts = get().alerts;
     const existingById = new Map(existingAlerts.map(alert => [alert.id, alert]));
 
-    const stuckAlerts = cards
-      .filter(card => {
+    const activeCards = cards.filter(
+      (card) =>
+        card.status !== 'completed' &&
+        !card.cardId?.startsWith('TEST-')
+    );
+
+    const stuckAlerts = activeCards
+      .filter((card) => {
         const timeInactive = getActiveElapsedMs(
           card.stageEnteredAt || card.updatedAt,
           8,
-          17
+          16
         );
-        return card.status !== 'completed' && timeInactive >= thresholdMs;
+        return timeInactive >= thresholdMs;
       })
       .map(card => {
         const stageId = card.currentStage || card.currentLocation || 'unknown';
@@ -214,7 +220,7 @@ export const useAlertsStore = create<AlertsState>((set, get) => ({
         const timeInactive = getActiveElapsedMs(
           card.stageEnteredAt || card.updatedAt,
           8,
-          17
+          16
         );
         const hoursStuck = timeInactive / (1000 * 60 * 60);
         const ratio = timeInactive / thresholdMs;

@@ -99,6 +99,10 @@ export default function ActivityFeedScreen() {
                 </TouchableOpacity>
             </View>
 
+            <Text style={[styles.testNote, { color: palette.textTertiary }]}>
+              Showing test cards. Real cards appear after QR scanning begins.
+            </Text>
+
             <FlatList
                 data={events}
                 keyExtractor={(item) => item.id}
@@ -130,6 +134,7 @@ const styles = StyleSheet.create({
     backBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
     headerTitle: { ...typography.h4 },
     refreshBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+    testNote: { ...typography.small, paddingHorizontal: spacing.lg, paddingTop: spacing.sm, fontStyle: 'italic' },
     listContent: { padding: spacing.lg, paddingBottom: 40 },
     activityItem: {
         flexDirection: 'row',

@@ -164,7 +164,7 @@ export default function LossesScreen() {
     zone1,
     zone2,
     loading: lossesLoading,
-  } = useTodaysLosses();
+  } = useTodaysLosses(filter);
 
   // Active batch and quality threshold state
   const [activeBatch, setActiveBatch] = useState<any>(null);

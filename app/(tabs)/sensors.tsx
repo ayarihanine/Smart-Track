@@ -12,8 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { borderRadius, shadows, spacing, typography } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
 import { getSupabaseClient } from '@/lib/supabase';
-import { fetchLatestSensorStates } from '@/lib/api';
-import { SensorState } from '@/types';
+import { fetchLatestSensorStates, SensorReading, sensorIdToPosition } from '@/lib/api';
 
 // Helper — call this for each sensor card
 function getSensorDisplay(state: 'HIGH' | 'LOW' | 'UNKNOWN') {
@@ -59,10 +58,10 @@ export default function SensorsTabScreen() {
   const { palette } = useTheme();
   
   // STEP 3A: State initialization
-  const [sensorStates, setSensorStates] = useState<SensorState[]>([
-    { sensor_id: 'capteur1', state: 'LOW', counter: 0, recorded_at: '' },
-    { sensor_id: 'capteur2', state: 'LOW', counter: 0, recorded_at: '' },
-    { sensor_id: 'capteur3', state: 'LOW', counter: 0, recorded_at: '' },
+  const [sensorStates, setSensorStates] = useState<SensorReading[]>([
+    { position: 1, sensorId: 'capteur1', state: 'UNKNOWN', counter: 0, recordedAt: null, gpioPin: 17 },
+    { position: 2, sensorId: 'capteur2', state: 'UNKNOWN', counter: 0, recordedAt: null, gpioPin: 26 },
+    { position: 3, sensorId: 'capteur3', state: 'UNKNOWN', counter: 0, recordedAt: null, gpioPin: 16 },
   ]);
   const [loading, setLoading] = useState(true);
 
@@ -109,20 +108,23 @@ export default function SensorsTabScreen() {
             counter: number;
             recorded_at: string;
           };
-          if (!['capteur1', 'capteur2', 'capteur3'].includes(row.sensor_id)) return;
+          const position = sensorIdToPosition(row.sensor_id);
+          if (!position) return;
 
-          setSensorStates(prev => {
+          setSensorStates((prev) => {
             const updated = [...prev];
-            const idx = updated.findIndex(s => s.sensor_id === row.sensor_id);
-            const newState: SensorState = {
-              sensor_id: row.sensor_id as SensorState['sensor_id'],
+            const idx = updated.findIndex((s) => s.position === position);
+            const reading: SensorReading = {
+              position,
+              sensorId: row.sensor_id,
               state: row.state as 'HIGH' | 'LOW',
               counter: row.counter,
-              recorded_at: row.recorded_at,
+              recordedAt: row.recorded_at,
+              gpioPin: 0,
             };
-            if (idx >= 0) updated[idx] = newState;
-            else updated.push(newState);
-            return updated;
+            if (idx >= 0) updated[idx] = reading;
+            else updated.push(reading);
+            return updated.sort((a, b) => a.position - b.position);
           });
         }
       )
@@ -141,9 +143,9 @@ export default function SensorsTabScreen() {
   }, []);
 
   // STEP 3E: Counter-based loss indicator
-  const c1 = sensorStates.find(s => s.sensor_id === 'capteur1')?.counter ?? 0;
-  const c2 = sensorStates.find(s => s.sensor_id === 'capteur2')?.counter ?? 0;
-  const c3 = sensorStates.find(s => s.sensor_id === 'capteur3')?.counter ?? 0;
+  const c1 = sensorStates.find((s) => s.position === 1)?.counter ?? 0;
+  const c2 = sensorStates.find((s) => s.position === 2)?.counter ?? 0;
+  const c3 = sensorStates.find((s) => s.position === 3)?.counter ?? 0;
 
   const lossZone1 = Math.max(0, c1 - c2);  // cards lost between sensor 1 and 2
   const lossZone2 = Math.max(0, c2 - c3);  // cards lost between sensor 2 and 3
@@ -181,15 +183,15 @@ export default function SensorsTabScreen() {
         <View style={styles.sensorGrid}>
           {sensorStates.map((sensor) => {
             const display = getSensorDisplay(sensor.state || 'UNKNOWN');
-            const iconName = sensor.sensor_id === 'capteur1' 
-              ? 'enter-outline' 
-              : sensor.sensor_id === 'capteur2' 
-                ? 'git-commit-outline' 
+            const iconName = sensor.position === 1
+              ? 'enter-outline'
+              : sensor.position === 2
+                ? 'git-commit-outline'
                 : 'exit-outline';
 
             return (
-              <View 
-                key={sensor.sensor_id} 
+              <View
+                key={`sensor-${sensor.position}`}
                 style={[
                   styles.sensorCard, 
                   { 
@@ -204,14 +206,14 @@ export default function SensorsTabScreen() {
                   </View>
                   <View style={styles.sensorIdentity}>
                     <Text style={[styles.sensorLabelText, { color: palette.text }]}>
-                      {sensor.sensor_id === 'capteur1' 
-                        ? 'Sensor 1 (Entry)' 
-                        : sensor.sensor_id === 'capteur2' 
-                          ? 'Sensor 2 (Middle)' 
+                      {sensor.position === 1
+                        ? 'Sensor 1 (Entry)'
+                        : sensor.position === 2
+                          ? 'Sensor 2 (Middle)'
                           : 'Sensor 3 (Exit)'}
                     </Text>
                     <Text style={[styles.sensorIdSub, { color: palette.textTertiary }]}>
-                      {sensor.sensor_id}
+                      {sensor.sensorId}
                     </Text>
                   </View>
                   <View style={[styles.stateIndicatorBadge, { backgroundColor: display.color + '15' }]}>
@@ -232,7 +234,7 @@ export default function SensorsTabScreen() {
                   <View style={styles.infoCol}>
                     <Text style={[styles.infoLabel, { color: palette.textTertiary }]}>LAST DETECTED</Text>
                     <Text style={[styles.infoValue, { color: palette.text }]}>
-                      {formatTime(sensor.recorded_at)}
+                      {formatTime(sensor.recordedAt)}
                     </Text>
                   </View>
                 </View>
