@@ -12,12 +12,12 @@ export interface LossSummary {
 
 function getRangeStart(range: LossesRange): string {
   const start = new Date();
-  start.setUTCHours(0, 0, 0, 0);
+  start.setHours(0, 0, 0, 0);
 
   if (range === 'week') {
-    start.setUTCDate(start.getUTCDate() - 7);
+    start.setDate(start.getDate() - 7);
   } else if (range === 'month') {
-    start.setUTCDate(1);
+    start.setDate(1);
   }
 
   return start.toISOString();

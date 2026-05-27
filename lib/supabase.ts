@@ -106,4 +106,7 @@ export const supabase = {
   channel: (...args: Parameters<SupabaseClient['channel']>) => requireSupabaseClient().channel(...args),
   removeChannel: (channel: Parameters<SupabaseClient['removeChannel']>[0]) =>
     requireSupabaseClient().removeChannel(channel),
+  get auth() {
+    return requireSupabaseClient().auth;
+  },
 };

@@ -194,15 +194,15 @@ export const useAlertsStore = create<AlertsState>((set, get) => ({
     if (now - lastStuckCheck < STUCK_CHECK_INTERVAL_MS) return;
     lastStuckCheck = now;
 
+    const activeCards = cards.filter(card =>
+      card.status !== 'completed' &&
+      card.status !== 'removed' &&
+      !String(card.cardId ?? '').startsWith('TEST-')
+    );
+
     const thresholdMs = Math.max(36, thresholdHours) * 60 * 60 * 1000;
     const existingAlerts = get().alerts;
     const existingById = new Map(existingAlerts.map(alert => [alert.id, alert]));
-
-    const activeCards = cards.filter(
-      (card) =>
-        card.status !== 'completed' &&
-        !card.cardId?.startsWith('TEST-')
-    );
 
     const stuckAlerts = activeCards
       .filter((card) => {

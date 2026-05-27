@@ -1,4 +1,4 @@
-import { Stack, router } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useFrameworkReady } from '@/hooks/useFrameworkReady';
 import { useEffect } from 'react';
@@ -16,29 +16,17 @@ const queryClient = new QueryClient({
   },
 });
 
-
-
 function AuthListener() {
   const user = useAuthStore(state => state.user);
   const initializeAuth = useAuthStore(state => state.initialize);
   const loadSettings = useSettingsStore(state => state.loadSettings);
-  const hasSeenOnboarding = useSettingsStore(state => state.hasSeenOnboarding);
-
-
+  
   useEffect(() => {
-    if (typeof loadSettings === 'function') {
-      loadSettings();
-    }
-    if (typeof initializeAuth === 'function') {
-      initializeAuth();
-    }
+    if (typeof loadSettings === 'function') loadSettings();
+    if (typeof initializeAuth === 'function') initializeAuth();
   }, [loadSettings, initializeAuth]);
 
-  useEffect(() => {
-    return configureSupabaseAuthAutoRefresh();
-  }, []);
-
-
+  useEffect(() => configureSupabaseAuthAutoRefresh(), []);
 
   useEffect(() => {
     if (user?.id) {
@@ -50,7 +38,7 @@ function AuthListener() {
               .from('user_settings')
               .select('stuck_card_threshold_hours')
               .eq('user_id', user.id)
-              .maybeSingle(); // MUST use maybeSingle, not single — no error if row missing
+              .maybeSingle();
 
             if (userSettings?.stuck_card_threshold_hours !== undefined) {
               useSettingsStore.setState({
@@ -59,20 +47,12 @@ function AuthListener() {
             }
           }
         } catch (err) {
-          console.error('Failed to load stuck card threshold from user_settings:', err);
+          console.error('Failed to load stuck card threshold:', err);
         }
       };
       loadUserDbSettings();
     }
   }, [user?.id]);
-
-  useEffect(() => {
-    if (hasSeenOnboarding === false) {
-      setTimeout(() => {
-        router.replace('/onboarding');
-      }, 0);
-    }
-  }, [hasSeenOnboarding]);
 
   return null;
 }
@@ -91,32 +71,14 @@ function RootNavigator() {
       }}
     >
       <Stack.Screen name="index" options={{ headerShown: false }} />
+      <Stack.Screen name="onboarding" options={{ headerShown: false }} />
       <Stack.Screen name="auth" />
       <Stack.Screen name="(tabs)" />
-      <Stack.Screen
-        name="card/[id]"
-        options={{
-          headerShown: false,
-        }}
-      />
-      <Stack.Screen
-        name="system-status"
-        options={{
-          headerShown: false,
-        }}
-      />
-      <Stack.Screen
-        name="configuration/index"
-        options={{
-          headerShown: false,
-        }}
-      />
-      <Stack.Screen
-        name="articles/index"
-        options={{
-          headerShown: false,
-        }}
-      />
+      
+      <Stack.Screen name="card/[id]" options={{ headerShown: false }} />
+      <Stack.Screen name="configuration/index" options={{ headerShown: false }} />
+      <Stack.Screen name="articles/index" options={{ headerShown: false }} />
+      
       <Stack.Screen
         name="export"
         options={{
@@ -126,17 +88,53 @@ function RootNavigator() {
           headerTintColor: '#fff',
         }}
       />
-      <Stack.Screen name="onboarding" options={{ headerShown: false, gestureEnabled: false }} />
+      
+      <Stack.Screen
+        name="stuck-cards"
+        options={{
+          presentation: 'modal',
+          headerShown: true,
+          headerTitle: t('stuckCards'), // ✅ Fixed
+        }}
+      />
+      
+      <Stack.Screen
+        name="notifications"
+        options={{
+          presentation: 'modal',
+          headerShown: true,
+          headerTitle: t('notifications'),
+        }}
+      />
+      
+      {/* Admin Routes - with i18n + theme colors */}
       <Stack.Screen
         name="admin"
         options={{
           headerShown: true,
-          headerTitle: 'Admin Panel',
-          headerStyle: { backgroundColor: '#8B5CF6' },
+          headerTitle: t('adminPanel'), // ✅ Fixed
+          headerStyle: { backgroundColor: palette.primary }, // ✅ Theme-consistent
           headerTintColor: '#fff',
         }}
       />
-
+      <Stack.Screen
+        name="admin/settings"
+        options={{
+          headerShown: true,
+          headerTitle: t('adminSettings'), // ✅ Fixed
+          headerStyle: { backgroundColor: palette.primary },
+          headerTintColor: '#fff',
+        }}
+      />
+      <Stack.Screen
+        name="admin/users"
+        options={{
+          headerShown: true,
+          headerTitle: t('userManagement'), // ✅ Fixed
+          headerStyle: { backgroundColor: palette.primary },
+          headerTintColor: '#fff',
+        }}
+      />
     </Stack>
   );
 }

@@ -28,17 +28,17 @@ export default function TabLayout() {
     if (!supabase) return () => { mounted = false; };
 
     const channel = supabase
-      .channel('pertes-tab-badge')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pertes_table' }, (payload: any) => {
+      .channel('losses-tab-badge')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'production_losses' }, (payload: any) => {
         const row = payload.new as any;
-        const dateValue = row?.date_temps || row?.timestamp;
+        const dateValue = row?.loss_date || row?.timestamp;
         if (!dateValue) return;
 
         const date = new Date(dateValue);
         const today = new Date();
         if (date.toDateString() !== today.toDateString()) return;
 
-        setLossesCount((current) => current + Number(row?.nb_cartes_perdues ?? 0));
+        setLossesCount((current) => current + Number(row?.quantity ?? 0));
       })
       .subscribe();
 
@@ -102,7 +102,7 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="pertes"
+        name="losses"
         options={{
           title: t('lossesTab'),
           tabBarIcon: ({ color, size }) => (
@@ -118,16 +118,6 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="history"
-        options={{
-          href: null,
-          title: t('cardsTab'),
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="layers" size={size} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
         name="scan"
         options={{
           title: t('scan'),
@@ -137,27 +127,6 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="statistiques"
-        options={{
-          href: null,
-          title: t('statisticsTab'),
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="bar-chart" size={size} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="sensors"
-        options={{
-          href: null,
-          title: 'Sensors',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="hardware-chip" size={size} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen name="quality-report" options={{ href: null }} />
-      <Tabs.Screen
         name="profile"
         options={{
           title: t('profile'),
@@ -166,6 +135,28 @@ export default function TabLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="history"
+        options={{
+          href: null,
+          title: t('cardsTab'),
+        }}
+      />
+      <Tabs.Screen
+        name="statistics"
+        options={{
+          href: null,
+          title: t('statisticsTab'),
+        }}
+      />
+      <Tabs.Screen
+        name="sensors"
+        options={{
+          href: null,
+          title: 'Sensors',
+        }}
+      />
+      <Tabs.Screen name="quality-report" options={{ href: null }} />
       <Tabs.Screen name="settings" options={{ href: null }} />
     </Tabs>
   );

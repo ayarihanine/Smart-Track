@@ -16,13 +16,13 @@ export function useMachineConfig() {
 
     supabase
       .from('configuration')
-      .select('expected_daily_production, cycle_time_seconds, loss_threshold, shift_start, shift_end')
+      .select('nb_cartes_attendues, expected_daily_production, cycle_time_seconds, loss_threshold, shift_start, shift_end')
       .eq('id', 1)
       .single()
       .then(({ data, error }) => {
         if (!error && data) {
           setConfig({
-            expected: data.expected_daily_production || 10,
+            expected: data.nb_cartes_attendues ?? data.expected_daily_production ?? 10,
             cycleTime: data.cycle_time_seconds || 5,
             lossThreshold: data.loss_threshold || 1,
             shiftStart: data.shift_start?.toString().slice(0,5) || '08:00',

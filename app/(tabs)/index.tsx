@@ -56,15 +56,15 @@ function CardListItem({ card, onPress, onDelete, palette, primaryColor }: { card
     const mins = Math.floor(diff / 60000);
     const hours = Math.floor(mins / 60);
     const days = Math.floor(hours / 24);
-    if (days > 0) return `${days}d ago`; 
+    if (days > 0) return `${days}d ago`;
     if (hours > 0) return t('hoursAgo').replace('X', hours.toString());
     return t('minsAgo').replace('X', mins.toString());
   };
 
   return (
-    <TouchableOpacity 
-      style={[styles.cardItem, { backgroundColor: palette.background, borderColor: palette.border }]} 
-      onPress={onPress} 
+    <TouchableOpacity
+      style={[styles.cardItem, { backgroundColor: palette.background, borderColor: palette.border }]}
+      onPress={onPress}
       activeOpacity={0.8}
     >
       <LinearGradient
@@ -73,9 +73,9 @@ function CardListItem({ card, onPress, onDelete, palette, primaryColor }: { card
       />
       <View style={styles.cardItemInner}>
         <View style={[styles.cardIconBox, { backgroundColor: stageColor + '12' }]}>
-           <Ionicons name={card.status === 'completed' ? "shield-checkmark" : "hardware-chip-outline"} size={20} color={stageColor} />
+          <Ionicons name={card.status === 'completed' ? "shield-checkmark" : "hardware-chip-outline"} size={20} color={stageColor} />
         </View>
-        
+
         <View style={styles.cardMainInfo}>
           <View style={styles.cardIdRow}>
             <Text style={[styles.cardIdText, { color: palette.text }]} numberOfLines={1}>{card.cardId}</Text>
@@ -85,14 +85,14 @@ function CardListItem({ card, onPress, onDelete, palette, primaryColor }: { card
               </View>
             ) : null}
           </View>
-          <Text style={[styles.cardTimeText, { color: palette.textTertiary }]}> 
-             <Ionicons name="location-outline" size={12} color={palette.textTertiary} /> {card.currentLocation ? `${card.currentLocation} · ` : ''}{getTimeAgo(card.updatedAt)}
+          <Text style={[styles.cardTimeText, { color: palette.textTertiary }]}>
+            <Ionicons name="location-outline" size={12} color={palette.textTertiary} /> {card.currentLocation ? `${card.currentLocation} · ` : ''}{getTimeAgo(card.updatedAt)}
           </Text>
         </View>
 
         {onDelete && (
-          <TouchableOpacity 
-            style={styles.cardMoreBtn} 
+          <TouchableOpacity
+            style={styles.cardMoreBtn}
             onPress={(e) => {
               e.stopPropagation();
               onDelete();
@@ -240,7 +240,7 @@ export default function HomeScreen() {
   }, [cards, stuckThreshold, checkStuckCards]);
 
   const thresholdMs = Math.max(36, stuckThreshold) * 60 * 60 * 1000;
-  
+
   const delayedCards = (cards || []).filter(c => {
     const referenceTime = c.stageEnteredAt || c.updatedAt;
     const activeElapsedMs = getActiveElapsedMs(referenceTime, 8, 16);
@@ -262,8 +262,8 @@ export default function HomeScreen() {
       t('deleteCardConfirm') || 'Are you sure you want to delete this card?',
       [
         { text: t('cancel'), style: 'cancel' },
-        { 
-          text: t('delete'), 
+        {
+          text: t('delete'),
           style: 'destructive',
           onPress: async () => {
             const success = await deleteCard(cardId);

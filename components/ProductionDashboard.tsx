@@ -14,7 +14,7 @@ import Svg, { Circle } from 'react-native-svg';
 import { borderRadius, spacing, typography } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
 import { fetchConfiguration } from '@/lib/api';
-import { useSensorCounters, SensorSlot } from '@/hooks/useSensorCounters';
+import { useSensorCounters } from '@/hooks/useSensorCounters';
 
 const DEFAULT_CONFIG = {
   machine_name: 'NPM-DX-1',
@@ -40,7 +40,7 @@ function SensorCard({
   palette,
 }: {
   label: string;
-  slot: SensorSlot;
+  slot: { state: string; lastSeen: string };
   counter: number;
   palette: any;
 }) {

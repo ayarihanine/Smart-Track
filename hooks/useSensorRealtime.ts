@@ -31,7 +31,16 @@ export interface UseSensorRealtimeResult {
 }
 
 const SENSOR_IDS = ['capteur1', 'capteur2', 'capteur3'] as const;
+const ALT_SENSOR_IDS = ['sensor1', 'sensor2', 'sensor3'] as const;
 const ACTIVITY_WINDOW_MS = 10_000; // 10 seconds
+
+/** Normalize sensor1/2/3 to capteur1/2/3 */
+function normalizeSensorId(sid: string): string | null {
+  const idx = ALT_SENSOR_IDS.indexOf(sid as any);
+  if (idx !== -1) return SENSOR_IDS[idx];
+  if (SENSOR_IDS.includes(sid as any)) return sid;
+  return null;
+}
 
 function computeLiveCounters(counters: SensorCounters): LiveLossCounters {
   return {
@@ -63,6 +72,8 @@ export function useSensorRealtime(): UseSensorRealtimeResult {
 
   // Track last HIGH event timestamp per sensor
   const lastHighAt = useRef<Record<string, number>>({});
+  const countersRef = useRef(counters);
+  countersRef.current = counters;
 
   const updateActivity = useCallback(() => {
     const now = Date.now();
@@ -85,10 +96,14 @@ export function useSensorRealtime(): UseSensorRealtimeResult {
     }
 
     try {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+
       const { data, error: dbError } = await supabase
         .from('sensor_events')
         .select('sensor_id, counter, state, recorded_at')
-        .in('sensor_id', [...SENSOR_IDS])
+        .in('sensor_id', [...SENSOR_IDS, ...ALT_SENSOR_IDS])
+        .gte('recorded_at', startOfDay.toISOString())
         .order('recorded_at', { ascending: false })
         .limit(9); // up to 3 per sensor
 
@@ -148,8 +163,8 @@ export function useSensorRealtime(): UseSensorRealtimeResult {
             recorded_at: string;
           };
 
-          const sid = row.sensor_id;
-          if (!SENSOR_IDS.includes(sid as any)) return;
+          const sid = normalizeSensorId(row.sensor_id);
+          if (!sid) return;
 
           const counter = Number(row.counter ?? 0);
 
@@ -159,10 +174,8 @@ export function useSensorRealtime(): UseSensorRealtimeResult {
           }
           updateActivity();
 
-          setCounters((current) => {
-            setPreviousCounters(current);
-            return { ...current, [sid]: counter };
-          });
+          setPreviousCounters(countersRef.current);
+          setCounters((current) => ({ ...current, [sid]: counter }));
         }
       )
       .subscribe();

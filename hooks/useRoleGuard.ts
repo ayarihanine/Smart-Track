@@ -1,14 +1,20 @@
-import { useEffect } from 'react';
-import { router } from 'expo-router';
-import { useAuthStore } from '@/store/authStore';
-import { UserRole } from '@/types';
+import { useEffect } from 'react'
+import { useRouter } from 'expo-router'
+import { useAuthStore } from '@/hooks/useAuthStore'
 
-export function useRoleGuard(allowedRoles: UserRole[]) {
-  const { profile, isAuthenticated } = useAuthStore();
+type Role = 'admin' | 'supervisor' | 'operator'
+
+export function useRoleGuard(allowedRoles: Role[]) {
+  const router = useRouter()
+  const { role, loading } = useAuthStore()
 
   useEffect(() => {
-    if (isAuthenticated && profile && !allowedRoles.includes(profile.role)) {
-      router.replace('/(tabs)/');
+    if (loading) return
+
+    if (role && !allowedRoles.includes(role)) {
+      router.replace('/(tabs)/')
     }
-  }, [profile, isAuthenticated, allowedRoles]);
+  }, [role, loading, allowedRoles])
+
+  return { isAuthorized: role ? allowedRoles.includes(role) : false }
 }
