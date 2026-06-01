@@ -228,7 +228,7 @@ export default function ProfileScreen() {
             <RoleToolItem
               icon="bar-chart-outline" color="#2563EB"
               label={t('statisticsTab')} desc={t('statisticsDesc' as any) || 'Production statistics'}
-              onPress={() => router.push('/(tabs)/statistiques')} palette={palette}
+              onPress={() => router.push('/(tabs)/statistics')} palette={palette}
             />
 
             {/* Supervisor+ Tools */}

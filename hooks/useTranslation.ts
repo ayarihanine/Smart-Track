@@ -5,7 +5,7 @@ export function useTranslation() {
     const language = useSettingsStore((state) => state.language);
     const setSettings = useSettingsStore((state) => state.setSettings);
 
-    const t = (key: TranslationKey): string => {
+    const t = (key: TranslationKey | string): string => {
         const langResStr = (translations[language] || translations.en) as any;
         return langResStr[key] || (translations.en as any)[key] || key;
     };

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getSupabaseClient } from '@/lib/supabase';
 
 type AlertSeverity = 'warning' | 'error' | 'medium' | 'high' | 'critical';
 type AlertType = 'stuck_card' | 'quality_alert' | 'blocking_anomaly' | 'system';
@@ -30,9 +31,9 @@ interface AlertsState {
   checkStuckCards: (cards: AlertCardSnapshot[], thresholdHours: number) => void;
 }
 
-function buildStuckCardMessage(card: AlertCardSnapshot, hoursStuck: number) {
+function buildStuckCardMessage(card: AlertCardSnapshot, minsStuck: number) {
   const stageLabel = card.currentStage || card.currentLocation || 'the current station';
-  return `Card ${card.cardId} has been stuck at ${stageLabel} for ${hoursStuck}h.`;
+  return `Card ${card.cardId} has been stuck at ${stageLabel} for ${minsStuck} min.`;
 }
 
 export function getActiveElapsedMs(
@@ -189,7 +190,7 @@ export const useAlertsStore = create<AlertsState>((set, get) => ({
     }));
   },
 
-  checkStuckCards: (cards, thresholdHours) => {
+  checkStuckCards: (cards, thresholdMinutes) => {
     const now = Date.now();
     if (now - lastStuckCheck < STUCK_CHECK_INTERVAL_MS) return;
     lastStuckCheck = now;
@@ -197,33 +198,31 @@ export const useAlertsStore = create<AlertsState>((set, get) => ({
     const activeCards = cards.filter(card =>
       card.status !== 'completed' &&
       card.status !== 'removed' &&
+      card.status !== 'cancelled' &&
       !String(card.cardId ?? '').startsWith('TEST-')
     );
 
-    const thresholdMs = Math.max(36, thresholdHours) * 60 * 60 * 1000;
+    // Enforce strict 10-minute maximum threshold (replacing hour-based calculations)
+    const limitMinutes = Math.min(10, thresholdMinutes ?? 10);
+    const thresholdMs = Math.max(1, limitMinutes) * 60 * 1000;
     const existingAlerts = get().alerts;
     const existingById = new Map(existingAlerts.map(alert => [alert.id, alert]));
 
     const stuckAlerts = activeCards
       .filter((card) => {
-        const timeInactive = getActiveElapsedMs(
-          card.stageEnteredAt || card.updatedAt,
-          8,
-          16
-        );
-        return timeInactive >= thresholdMs;
+        const enteredAt = card.stageEnteredAt || card.updatedAt;
+        if (!enteredAt) return false;
+        const elapsedMs = now - new Date(enteredAt).getTime();
+        return elapsedMs >= thresholdMs;
       })
       .map(card => {
         const stageId = card.currentStage || card.currentLocation || 'unknown';
         const id = `stuck:${card.cardId}:${stageId}`;
         const existing = existingById.get(id);
-        const timeInactive = getActiveElapsedMs(
-          card.stageEnteredAt || card.updatedAt,
-          8,
-          16
-        );
-        const hoursStuck = timeInactive / (1000 * 60 * 60);
-        const ratio = timeInactive / thresholdMs;
+        const enteredAt = card.stageEnteredAt || card.updatedAt;
+        const elapsedMs = now - new Date(enteredAt!).getTime();
+        const minsStuck = Math.floor(elapsedMs / (1000 * 60));
+        const ratio = elapsedMs / thresholdMs;
 
         let severity: AlertSeverity = 'medium';
         if (ratio >= 2.0) {
@@ -236,12 +235,35 @@ export const useAlertsStore = create<AlertsState>((set, get) => ({
           id,
           type: 'stuck_card' as const,
           severity,
-          message: buildStuckCardMessage(card, Math.max(1, Math.floor(hoursStuck))),
+          message: buildStuckCardMessage(card, Math.max(1, minsStuck)),
           cardId: card.cardId,
           createdAt: existing?.createdAt || card.updatedAt || new Date().toISOString(),
           dismissed: existing?.dismissed ?? false,
         };
       });
+
+    // Write new stuck card alerts to DB so the notification badge and page pick them up
+    const newStuck = stuckAlerts.filter(a => !existingById.has(a.id));
+    if (newStuck.length > 0) {
+      const supabase = getSupabaseClient();
+      if (supabase) {
+        for (const alert of newStuck) {
+          supabase.from('alerts').insert({
+            card_id: alert.cardId,
+            type: 'STUCK_CARD',
+            title: 'Stuck Card',
+            message: alert.message,
+            severity: alert.severity === 'critical' ? 'high' : 'medium',
+            is_read: false,
+            created_at: alert.createdAt,
+          }).then(({ error }) => {
+            if (error && error.code !== '23505') {
+              console.error('Failed to write stuck alert to DB:', error);
+            }
+          });
+        }
+      }
+    }
 
     const nonStuckAlerts = existingAlerts.filter(alert => !alert.id.startsWith('stuck:'));
 

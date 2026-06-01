@@ -16,6 +16,11 @@ const SEVERITY_STYLE = {
   high: { bg: '#FEF2F2', border: '#FECACA', icon: 'alert-circle', color: '#DC2626' },
 };
 
+const cleanText = (text: string | null | undefined) => {
+  if (!text) return '';
+  return text.replace(/\b(tres|trg|trs)\b/gi, (match) => match.toLowerCase() === 'trg' ? 'OOE' : 'OEE');
+};
+
 export default function NotificationsScreen() {
   const { t } = useTranslation();
   const { palette, isDark } = useTheme();
@@ -99,8 +104,19 @@ export default function NotificationsScreen() {
             const itemBg = isDark ? '#1f2937' : s.bg;
             
             return (
-              <Animated.View 
+              <TouchableOpacity
                 key={alert.id}
+                activeOpacity={0.7}
+                onPress={() => {
+                  const targetCardId = alert.card_id;
+                  if (alert.type === 'STUCK_CARD') {
+                    router.push('/stuck-cards');
+                  } else if (targetCardId) {
+                    router.push(`/card/${targetCardId}` as never);
+                  }
+                }}
+              >
+              <Animated.View 
                 style={[
                   styles.notificationCard, 
                   { 
@@ -120,7 +136,7 @@ export default function NotificationsScreen() {
                     <View style={styles.cardTitleRow}>
                       {!alert.is_read ? <View style={[styles.unreadDot, { backgroundColor: s.color }]} /> : null}
                       <Text style={[styles.cardType, { color: s.color }]}>
-                        {alert.title}
+                        {cleanText(alert.title)}
                       </Text>
                     </View>
                     <Text style={[styles.cardTime, { color: palette.textTertiary }]}>
@@ -136,10 +152,11 @@ export default function NotificationsScreen() {
                 
                 {alert.message ? (
                   <Text style={[styles.cardMsg, { color: isDark ? palette.text : s.color }]}>
-                    {alert.message}
+                    {cleanText(alert.message)}
                   </Text>
                 ) : null}
               </Animated.View>
+              </TouchableOpacity>
             );
           })
         )}

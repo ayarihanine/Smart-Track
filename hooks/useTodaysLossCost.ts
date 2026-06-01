@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { getSupabaseClient } from '@/lib/supabase';
+import { getRangeBounds } from '@/lib/dates';
 
 export type LossesFilter = 'today' | 'week' | 'month';
 
@@ -17,27 +18,6 @@ export interface TodaysLossCostResult {
   refetch: () => void;
 }
 
-interface ProductionLossRow {
-  estimated_cost_tnd: number | null;
-  quantity: number | null;
-  zone_from: string | null;
-}
-
-function getFilterStartDate(filter: LossesFilter): string {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-
-  if (filter === 'week') {
-    const day = start.getDay();
-    const diff = day === 0 ? 6 : day - 1;
-    start.setDate(start.getDate() - diff);
-  } else if (filter === 'month') {
-    start.setDate(1);
-  }
-
-  return start.toISOString();
-}
-
 export function useTodaysLossCost(filter: LossesFilter = 'today'): TodaysLossCostResult {
   const [totalCost, setTotalCost] = useState(0);
   const [totalCards, setTotalCards] = useState(0);
@@ -50,34 +30,31 @@ export function useTodaysLossCost(filter: LossesFilter = 'today'): TodaysLossCos
     setError(null);
 
     const supabase = getSupabaseClient();
-    if (!supabase) {
-      setError('Supabase not configured');
-      setIsLoading(false);
-      return;
-    }
+    if (!supabase) { setError('Supabase not configured'); setIsLoading(false); return; }
 
     try {
-      const startDate = getFilterStartDate(filter);
+      const { start, end } = getRangeBounds(filter);
 
       const { data, error: dbError } = await supabase
-        .from('production_losses')
-        .select('estimated_cost_tnd, quantity, zone_from')
-        .gte('loss_date', startDate);
+        .from('losses')
+        .select('loss_count, cost_tnd, loss_zone')
+        .gte('created_at', start)
+        .lt('created_at', end);
 
       if (dbError) throw dbError;
 
-      const rows = (data ?? []) as ProductionLossRow[];
-
-      let sumCost = 0;
       let sumCards = 0;
+      let sumCost = 0;
       let zone1 = 0;
       let zone2 = 0;
 
-      for (const row of rows) {
-        sumCost += Number(row.estimated_cost_tnd ?? 0);
-        sumCards += Number(row.quantity ?? 0);
-        if (row.zone_from === 'capteur1' || row.zone_from === 'Entry') zone1 += Number(row.quantity ?? 0);
-        if (row.zone_from === 'capteur2' || row.zone_from === 'Middle') zone2 += Number(row.quantity ?? 0);
+      for (const row of data ?? []) {
+        const cards = Number(row.loss_count ?? 0);
+        sumCards += cards;
+        sumCost += Number(row.cost_tnd ?? 0);
+        const z = (row.loss_zone ?? '').toLowerCase();
+        if (z.includes('1') && !z.includes('3')) zone1 += cards;
+        else if (z.includes('2') || (z.includes('3') && !z.includes('1'))) zone2 += cards;
       }
 
       setTotalCost(sumCost);
@@ -92,9 +69,7 @@ export function useTodaysLossCost(filter: LossesFilter = 'today'): TodaysLossCos
     }
   }, [filter]);
 
-  useEffect(() => {
-    fetchLossCost();
-  }, [fetchLossCost]);
+  useEffect(() => { fetchLossCost(); }, [fetchLossCost]);
 
   useEffect(() => {
     const supabase = getSupabaseClient();
@@ -102,26 +77,13 @@ export function useTodaysLossCost(filter: LossesFilter = 'today'): TodaysLossCos
 
     const channel = supabase
       .channel('use-todays-loss-cost')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'production_losses' },
-        () => {
-          fetchLossCost();
-        }
-      )
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'losses' }, () => {
+        fetchLossCost();
+      })
       .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
   }, [fetchLossCost]);
 
-  return {
-    totalCost,
-    totalCards,
-    breakdown,
-    isLoading,
-    error,
-    refetch: fetchLossCost,
-  };
+  return { totalCost, totalCards, breakdown, isLoading, error, refetch: fetchLossCost };
 }

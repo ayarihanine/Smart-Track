@@ -11,13 +11,14 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
+import { useTranslation } from '@/hooks/useTranslation';
 
 import { borderRadius, spacing, typography } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
 import { DailyReportSummary, fetchDailyReportSummaries } from '@/lib/api';
 
 const ZERO_NOTE =
-  'Note: KPIs will populate once the Pi5 writes to pertes_table and trg/trs tables.';
+  'Note: KPIs will populate once the Pi5 writes to losses and performance tables.';
 
 function statusColor(status: string): string {
   if (status === 'critical') return '#EF4444';
@@ -47,6 +48,7 @@ function isAllZero(report: DailyReportSummary): boolean {
 
 export default function QualityReportScreen() {
   const { palette } = useTheme();
+  const { t } = useTranslation();
   const [reports, setReports] = useState<DailyReportSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -118,10 +120,10 @@ export default function QualityReportScreen() {
                   Total bad: {report.total_bad}
                 </Text>
                 <Text style={[styles.metric, { color: palette.textSecondary }]}>
-                  TRG: {report.trg}%
+                  {t('trgLabel')}: {report.trg}%
                 </Text>
                 <Text style={[styles.metric, { color: palette.textSecondary }]}>
-                  TRS: {report.trs}%
+                  {t('trsLabel')}: {report.trs}%
                 </Text>
                 <Text style={[styles.metric, { color: palette.textSecondary }]}>
                   Losses: {report.total_losses}

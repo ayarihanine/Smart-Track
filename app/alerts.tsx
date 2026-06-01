@@ -2,11 +2,13 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
 import { getSupabaseClient } from '@/lib/supabase';
 import { fetchAlerts, markAlertRead } from '@/lib/api';
 import { Alert as DbAlert } from '@/types';
 import { useTranslation } from '@/hooks/useTranslation';
+import { useTheme } from '@/components/ThemeProvider';
 
 const SEVERITY = {
   low: { color: '#2563EB', bg: '#DBEAFE', icon: 'information-circle' },
@@ -14,8 +16,14 @@ const SEVERITY = {
   high: { color: '#DC2626', bg: '#FEE2E2', icon: 'alert-circle' },
 };
 
+const cleanText = (text: string | null | undefined) => {
+  if (!text) return '';
+  return text.replace(/\b(tres|trg|trs)\b/gi, (match) => match.toLowerCase() === 'trg' ? 'OOE' : 'OEE');
+};
+
 export default function AlertsScreen() {
   const { t } = useTranslation();
+  const { palette, isDark } = useTheme();
   const [alerts, setAlerts] = useState<DbAlert[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -64,13 +72,20 @@ export default function AlertsScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.title}>{t('alertDashboard' as any) || 'Alerts'}</Text>
-          <Text style={styles.subtitle}>{unreadCount > 0 ? `${unreadCount} unread` : 'No unread alerts'}</Text>
+    <SafeAreaView style={[styles.container, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
+      <View style={[styles.header, { backgroundColor: palette.background, borderBottomColor: palette.border }]}>
+        <TouchableOpacity
+          style={[styles.backBtn, { backgroundColor: isDark ? '#1e293b' : '#F3F4F6' }]}
+          onPress={() => router.back()}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Ionicons name="arrow-back" size={20} color={palette.text} />
+        </TouchableOpacity>
+        <View style={{ flex: 1, marginLeft: 12 }}>
+          <Text style={[styles.title, { color: palette.text }]}>{t('alertDashboard' as any) || 'Alerts'}</Text>
+          <Text style={[styles.subtitle, { color: palette.textSecondary }]}>{unreadCount > 0 ? `${unreadCount} unread` : 'No unread alerts'}</Text>
         </View>
-        {unreadCount > 0 ? <View style={styles.badge}><Text style={styles.badgeText}>{unreadCount}</Text></View> : null}
+        {unreadCount > 0 ? <View style={[styles.badge, { backgroundColor: colors.error }]}><Text style={styles.badgeText}>{unreadCount}</Text></View> : null}
       </View>
 
       {loading ? (
@@ -80,14 +95,15 @@ export default function AlertsScreen() {
       ) : (
         <ScrollView
           contentContainerStyle={styles.scrollContent}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={palette.primary} />}
         >
           {alerts.map((alert) => {
             const style = SEVERITY[alert.severity] || SEVERITY.low;
+            const cardBg = isDark ? '#1f2937' : style.bg;
             return (
               <TouchableOpacity
                 key={alert.id}
-                style={[styles.alertCard, { borderLeftColor: style.color }, !alert.is_read && styles.unreadCard]}
+                style={[styles.alertCard, { borderLeftColor: style.color, backgroundColor: cardBg, borderColor: isDark ? 'transparent' : style.color + '30' }, !alert.is_read && styles.unreadCard]}
                 onPress={() => onMarkRead(alert.id)}
                 activeOpacity={0.85}
               >
@@ -104,9 +120,9 @@ export default function AlertsScreen() {
                 <View style={styles.alertBody}>
                   <View style={styles.titleRow}>
                     {!alert.is_read ? <View style={styles.unreadDot} /> : null}
-                    <Text style={styles.alertTitle}>{alert.title}</Text>
+                    <Text style={styles.alertTitle}>{cleanText(alert.title)}</Text>
                   </View>
-                  {alert.message ? <Text style={styles.description}>{alert.message}</Text> : null}
+                  {alert.message ? <Text style={styles.description}>{cleanText(alert.message)}</Text> : null}
                 </View>
 
                 {!alert.is_read ? (
@@ -132,18 +148,18 @@ export default function AlertsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.backgroundSecondary },
+  container: { flex: 1 },
   header: {
-    padding: spacing.lg,
-    backgroundColor: colors.white,
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: spacing.md, paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
   },
-  title: { ...typography.h2, color: colors.text },
-  subtitle: { ...typography.small, color: colors.textSecondary, marginTop: 2 },
+  backBtn: {
+    width: 38, height: 38, borderRadius: 11,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  title: { ...typography.h4, fontWeight: '800' },
+  subtitle: { ...typography.tiny, marginTop: 2 },
   badge: {
     minWidth: 28,
     height: 28,

@@ -3,10 +3,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   ElectronicCard, ScanEvent, AppSettings, AnalyticsData, SystemNode, FilterOptions,
   LeaderboardEntry, UserProfile, Issue, Task, Comment, Product, LoadingPlanEntry, ComponentInsertion,
-  EtatCapteur, SensorEvent, SensorState, PertesTable, TRG, TRS, Configuration, Article,
-  PerteParJour, ProductionParJour, PerteParMachine, TodayLossSummary, ProductionBatch
+  SensorDataRow, LossRow, ProductionPerformanceRow, Configuration, Article,
+  TodayLossSummary, ProductionBatch, SensorData, DailyReport,
+  InspectedLoss, RootCauseCategory,
 } from '@/types';
 import { getActiveElapsedMs } from '@/store/alertsStore';
+import { getTodayBounds as sharedGetTodayBounds } from '@/lib/dates';
 
 const OFFLINE_KEYS = {
   CARDS: 'smarttrack_offline_cards',
@@ -91,28 +93,7 @@ export async function getCurrentBatchId(): Promise<string | null> {
   try {
     const storedBatchId = await AsyncStorage.getItem('current_batch_id');
     if (storedBatchId) return storedBatchId;
-
-    const supabase = getSupabaseClient();
-    if (!supabase) return null;
-
-    const { data, error } = await supabase
-      .from('production_batches')
-      .select('id, batch_number, card_reference, target_quantity')
-      .eq('status', 'active')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error || !data) return null;
-
-    await AsyncStorage.multiSet([
-      ['current_batch_id', data.id],
-      ['current_batch_number', data.batch_number || ''],
-      ['current_batch_card_reference', data.card_reference || ''],
-      ['current_batch_target_quantity', String(data.target_quantity || 0)],
-    ]);
-
-    return data.id;
+    return null;
   } catch (error) {
     console.error('getCurrentBatchId failed', error);
     return null;
@@ -195,13 +176,16 @@ export async function getCards(filters?: FilterOptions): Promise<ElectronicCard[
       query = query.eq('status', filters.status);
     }
 
-    if (filters?.sortBy === 'recent') {
-      query = query.order('created_at', { ascending: false });
-    } else if (filters?.sortBy === 'oldest') {
+    const sortBy = filters?.sortBy ?? 'recent';
+    if (sortBy === 'recent') {
+      query = query
+        .order('updated_at', { ascending: false })
+        .order('created_at', { ascending: false });
+    } else if (sortBy === 'oldest') {
       query = query.order('created_at', { ascending: true });
-    } else if (filters?.sortBy === 'id_asc') {
+    } else if (sortBy === 'id_asc') {
       query = query.order('card_id', { ascending: true });
-    } else if (filters?.sortBy === 'stage_order') {
+    } else if (sortBy === 'stage_order') {
       query = query.order('updated_at', { ascending: false });
     }
 
@@ -209,19 +193,6 @@ export async function getCards(filters?: FilterOptions): Promise<ElectronicCard[
     if (error) throw error;
 
     let cards = (data || []).map(mapDbCard);
-
-    for (const card of cards) {
-      if (card.productId) {
-        card.loadingPlan = await getLoadingPlanForProduct(card.productId);
-      }
-      card.componentInsertions = await getComponentInsertionsForCard(card.id);
-      
-      if (card.loadingPlan && card.loadingPlan.length > 0) {
-        const totalReq = card.loadingPlan.reduce((acc, p) => acc + p.requiredQuantity, 0);
-        const totalIns = card.componentInsertions?.reduce((acc, c) => acc + c.insertedQuantity, 0) || 0;
-        card.progressPercent = calculateProgressPercent(totalReq, totalIns);
-      }
-    }
 
     // Cache offline
     await AsyncStorage.setItem(OFFLINE_KEYS.CARDS, JSON.stringify(cards));
@@ -249,22 +220,6 @@ export async function getCard(cardId: string): Promise<ElectronicCard | null> {
     if (error) throw error;
     if (!records || !records.length) return null;
     const card = mapDbCard(records[0]);
-
-    if (card.productId) {
-      card.loadingPlan = await getLoadingPlanForProduct(card.productId);
-    }
-    card.componentInsertions = await getComponentInsertionsForCard(card.id);
-    
-    if (card.loadingPlan && card.loadingPlan.length > 0) {
-      const totalReq = card.loadingPlan.reduce((acc, p) => acc + p.requiredQuantity, 0);
-      const totalIns = card.componentInsertions?.reduce((acc, c) => acc + c.insertedQuantity, 0) || 0;
-      card.progressPercent = calculateProgressPercent(totalReq, totalIns);
-      
-      // If we achieved required total, it's completed
-      if (card.progressPercent >= 100) {
-        card.currentMachineStatus = 'completed';
-      }
-    }
     return card;
   } catch (error) {
     console.error('getCard failed', error);
@@ -308,8 +263,7 @@ export async function deleteCard(cardIdOrUuid: string): Promise<boolean> {
     }
 
     // Delete child records to avoid foreign key constraints
-    await supabase.from('component_insertions').delete().eq('card_id', cardUuid);
-    await supabase.from('scan_events').delete().eq('card_id', cardUuid);
+    await supabase.from('sensor_events').delete().eq('card_id', cardUuid);
 
     const { error } = await supabase
       .from('electronic_cards')
@@ -332,12 +286,7 @@ export async function createCard(cardId: string, productId: string): Promise<Ele
   if (!supabase) throw new Error('Supabase not configured');
 
   let currentMachine = 'SMT';
-  const plans = await getLoadingPlanForProduct(productId);
-  if (plans.length > 0) {
-    currentMachine = plans[0].machineReference || currentMachine;
-  }
 
-  const currentBatchId = await getCurrentBatchId();
   const insertPayload: Record<string, any> = {
     card_id: cardId,
     product_id: productId,
@@ -345,10 +294,6 @@ export async function createCard(cardId: string, productId: string): Promise<Ele
     current_machine: currentMachine,
     current_machine_status: 'in_progress',
   };
-
-  if (currentBatchId) {
-    insertPayload.batch_id = currentBatchId;
-  }
 
   const { data: recordArray, error } = await (supabase.from('electronic_cards') as any)
     .insert(insertPayload)
@@ -411,14 +356,11 @@ export async function reassignCard(cardId: string, newMachine: string, newLocati
     const session = (await supabase.auth.getSession())?.data.session;
     const user = session?.user;
 
-    // Log this as a scan event with notes
-    await (supabase.from('scan_events') as any).insert({
-      card_id: cardId, // might need resolution
-      scanned_by: user?.user_metadata?.displayName || user?.email || 'Supervisor',
-      location: newLocation,
-      stage_name: newMachine,
-      operator_id: user?.id,
-      notes: `[Reassigned] ${notes}`,
+    // Log this as a scan event (sensor_events columns: card_id TEXT FK, event_type, machine_name)
+    await (supabase.from('sensor_events') as any).insert({
+      card_id: cardId,
+      event_type: 'machine_placed',
+      machine_name: newMachine || newLocation,
     });
 
     return true;
@@ -446,13 +388,10 @@ export async function alertTestingTeam(cardId: string, currentStage?: string): P
     if (cardError || !cards || cards.length === 0) throw cardError || new Error('Card not found');
     const cardUuid = (cards[0] as any).id;
 
-    const { error } = await (supabase.from('scan_events') as any).insert({
-      card_id: cardUuid,
-      scanned_by: user?.user_metadata?.displayName || user?.email || 'Supervisor Alert',
-      location: 'System',
-      stage_name: currentStage || 'Testing Request',
-      operator_id: user?.id,
-      notes: `[ALERT] Supervisor (${user?.user_metadata?.displayName || user?.email || 'Unknown'}) requested testing intervention.`,
+    const { error } = await (supabase.from('sensor_events') as any).insert({
+      card_id: cardId,
+      event_type: 'error',
+      machine_name: currentStage || 'Unknown',
     });
 
     if (error) throw error;
@@ -488,100 +427,92 @@ export async function recordScan(data: {
   const user = session?.user;
 
   try {
-    const currentBatchId = data.batchId !== undefined ? data.batchId : await getCurrentBatchId();
-
-    // 1. Resolve display card_id to UUID
+    // 1. Resolve display card_id to UUID (case-insensitive to match frontend lookup)
     const { data: cardData, error: cardError } = await supabase
       .from('electronic_cards')
-      .select('id, product_id, current_machine, batch_id')
-      .eq('card_id', data.cardId)
+      .select('id, product_id, current_machine')
+      .ilike('card_id', data.cardId)
       .maybeSingle();
     
     let cardUuid = null;
     let productId = null;
+    let resolvedCard = null;
 
     if (cardError) throw cardError;
-    
-    if (!cardData) {
-      // Auto-create the card if it doesn't exist
-      // First, find a default product to satisfy any foreign key constraints
-      const { data: defaultProducts } = await supabase.from('products').select('id').limit(1);
-      const defaultProductId = defaultProducts && defaultProducts.length > 0 ? (defaultProducts[0] as any).id : null;
 
-      const insertPayload: Record<string, any> = {
-        card_id: data.cardId,
-        product_id: defaultProductId,
-        status: 'in_progress',
-        current_machine: data.location || data.stage || 'Unknown',
-        current_machine_status: 'in_progress',
-        operator_id: user?.id
-      };
+    resolvedCard = cardData as any;
 
-      if (currentBatchId) {
-        insertPayload.batch_id = currentBatchId;
-      }
+    if (!resolvedCard) {
+      // ilike missed — try exact match before auto-creating
+      const { data: exactCard } = await supabase
+        .from('electronic_cards')
+        .select('id, product_id, current_machine')
+        .eq('card_id', data.cardId)
+        .maybeSingle();
 
-      const { data: newCardData, error: createError } = await (supabase.from('electronic_cards') as any)
-        .insert(insertPayload)
-        .select('id, product_id')
-        .single();
+      if (exactCard) {
+        resolvedCard = exactCard as any;
+        cardUuid = resolvedCard.id;
+        productId = resolvedCard.product_id;
+      } else {
+        // Auto-create the card if it doesn't exist
+        const { data: defaultProducts } = await supabase.from('products').select('id').limit(1);
+        const defaultProductId = defaultProducts && defaultProducts.length > 0 ? (defaultProducts[0] as any).id : null;
+
+        const insertPayload: Record<string, any> = {
+          card_id: data.cardId,
+          product_id: defaultProductId,
+          status: 'in_progress',
+          current_machine: data.location || data.stage || 'Unknown',
+        };
+
+        const { data: newCardData, error: createError } = await (supabase.from('electronic_cards') as any)
+          .insert(insertPayload)
+          .select('id, product_id')
+          .single();
+          
+        if (createError) {
+          // If it fails to create (e.g. strict DB constraints), fallback to error
+          const error = new Error('Card not found and auto-create failed: ' + createError.message);
+          (error as any).code = 'CARD_NOT_FOUND';
+          throw error;
+        }
         
-      if (createError) {
-        // If it fails to create (e.g. strict DB constraints), fallback to error
-        const error = new Error('Card not found and auto-create failed: ' + createError.message);
-        (error as any).code = 'CARD_NOT_FOUND';
-        throw error;
+        cardUuid = newCardData.id;
+        productId = newCardData.product_id;
       }
-      
-      cardUuid = newCardData.id;
-      productId = newCardData.product_id;
     } else {
-      cardUuid = (cardData as any).id;
-      productId = (cardData as any).product_id;
+      cardUuid = resolvedCard.id;
+      productId = resolvedCard.product_id;
     }
 
-    // 2. Handle component insertions and find loading_plan_id
-    let loadingPlanId = null;
+    // 2. Handle component insertions (silently skip if tables don't exist)
     if (data.eventType === 'component_scan' && data.partReference) {
-      // Find matching plan entry
-      const { data: plans } = await supabase
-        .from('loading_plans')
-        .select('id')
-        .eq('product_id', productId)
-        .eq('part_reference', data.partReference)
-        .limit(1);
-      
-      if (plans && plans.length > 0) {
-        loadingPlanId = (plans[0] as any).id;
+      try {
+        await (supabase.from('component_insertions') as any).insert({
+          card_id: cardUuid,
+          part_reference: data.partReference,
+          inserted_quantity: data.quantity || 1,
+          machine_reference: data.location || data.stage,
+          operator_id: user?.id,
+        });
+      } catch {
+        // component_insertions table may not exist in this schema
       }
-
-      await (supabase.from('component_insertions') as any).insert({
-        card_id: cardUuid,
-        loading_plan_id: loadingPlanId,
-        part_reference: data.partReference,
-        inserted_quantity: data.quantity || 1,
-        machine_reference: data.location || data.stage,
-        operator_id: user?.id,
-      });
     }
 
     // 3. Update the card before logging the scan so active-batch scans are never left unassigned.
-    const oldStage = cardData?.current_machine;
+    const oldStage = resolvedCard?.current_machine;
     const newStage = data.stage;
     const isStageChange = !oldStage || oldStage !== newStage;
 
     const updatePayload: Record<string, any> = {
       current_machine: newStage,
+      updated_at: new Date().toISOString(),
     };
 
     if (isStageChange) {
       updatePayload.stage_entered_at = new Date().toISOString();
-    } else {
-      updatePayload.updated_at = new Date().toISOString();
-    }
-
-    if (currentBatchId) {
-      updatePayload.batch_id = currentBatchId;
     }
 
     const { error: updateCardError } = await (supabase.from('electronic_cards') as any)
@@ -590,17 +521,12 @@ export async function recordScan(data: {
 
     if (updateCardError) throw updateCardError;
 
-    // 4. Insert scan event
-    const { data: recordArray, error } = await (supabase.from('scan_events') as any)
+    // 4. Insert scan event (sensor_events column: card_id TEXT FK, event_type, machine_name, timestamp)
+    const { data: recordArray, error } = await (supabase.from('sensor_events') as any)
       .insert({
-        card_id: cardUuid,
-        scanned_by: user?.user_metadata?.displayName || user?.email || 'Unknown',
-        location: data.location,
-        stage_name: data.stage,
-        notes: data.notes || '',
-        operator_id: user?.id,
-        part_reference: data.partReference,
+        card_id: data.cardId,
         event_type: data.eventType || 'location_update',
+        machine_name: data.location || data.stage || 'Unknown',
       })
       .select();
 
@@ -608,14 +534,9 @@ export async function recordScan(data: {
 
     const record = recordArray && recordArray.length > 0 ? recordArray[0] : {
         id: `optimistic-${Date.now()}`,
-        card_id: cardUuid,
-        scanned_by: user?.user_metadata?.displayName || user?.email || 'Unknown',
-        location: data.location,
-        stage_name: data.stage,
-        notes: data.notes || '',
-        operator_id: user?.id,
-        part_reference: data.partReference,
+        card_id: data.cardId,
         event_type: data.eventType || 'location_update',
+        machine_name: data.location || data.stage || 'Unknown',
         timestamp: new Date().toISOString()
     };
 
@@ -637,8 +558,29 @@ export async function getScanEvents(cardId?: string): Promise<ScanEvent[]> {
   if (!supabase) return [];
 
   try {
+    // First, try to get data from production_history (which has more detail)
+    let historyQuery = supabase
+      .from('production_history')
+      .select('*');
+
+    if (cardId) {
+      historyQuery = historyQuery.eq('card_id', cardId);
+    }
+
+    const { data: historyData, error: historyError } = await historyQuery
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    if (historyError) throw historyError;
+
+    // If we have production_history, use it (more complete data)
+    if (historyData && historyData.length > 0) {
+      return (historyData || []).map(mapDbProductionHistoryToScanEvent);
+    }
+
+    // Fallback to sensor_events if no production_history
     let query = supabase
-      .from('scan_events')
+      .from('sensor_events')
       .select('*');
 
     if (cardId) {
@@ -648,12 +590,12 @@ export async function getScanEvents(cardId?: string): Promise<ScanEvent[]> {
           .from('electronic_cards')
           .select('id')
           .eq('card_id', cardId)
-          .single();
+          .maybeSingle();
         
         if (cardData) {
+          // sensor_events.card_id stores the electronic_cards UUID
           query = query.eq('card_id', (cardData as any).id);
         } else {
-          // If not found, it might actually be a UUID or just a missing card
           query = query.eq('card_id', cardId);
         }
       } else {
@@ -714,8 +656,24 @@ export async function upsertSystemNode(node: {
   }
 }
 export async function sendNodeCommand(nodeId: string, command: 'ping' | 'reboot' | 'fetch_logs'): Promise<boolean> {
-  // Mock success for demo
-  return new Promise((resolve) => setTimeout(() => resolve(true), 1000));
+  const supabase = getSupabaseClient();
+  if (!supabase) return false;
+
+  try {
+    const { error } = await supabase
+      .from('system_nodes')
+      .update({ pending_command: command })
+      .eq('node_id', nodeId);
+
+    if (error) {
+      console.error('sendNodeCommand failed', error);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error('sendNodeCommand error', err);
+    return false;
+  }
 }
 
 export async function getLeaderboard(period: 'today' | 'this_week' | 'all_time'): Promise<LeaderboardEntry[]> {
@@ -726,7 +684,7 @@ export async function getLeaderboard(period: 'today' | 'this_week' | 'all_time')
     const session = (await supabase.auth.getSession())?.data.session;
     const currentUserId = session?.user?.id;
 
-    let query = supabase.from('scan_events').select('*');
+    let query = supabase.from('sensor_events').select('*');
 
     const { data: rawEvents, error: eventError } = await query.limit(1000);
     if (eventError) throw eventError;
@@ -950,20 +908,20 @@ function mapDbCard(r: any): ElectronicCard {
     id: r.id,
     cardId: r.card_id || r.cardId || r.id,
     productId: r.product_id || r.productId,
+    productName: r.product_name || r.productName,
     status: r.status || 'in_progress',
     currentMachine: r.current_machine || r.currentMachine,
     currentMachineStatus: r.current_machine_status || r.currentMachineStatus || 'in_progress',
-    progressPercent: 0, // derived in high level
-    totalTimeMinutes: Number(r.total_time_minutes || r.totalTimeMinutes || 0),
-    scanPoints: Number(r.scan_points || r.scan_points || 0),
-    operatorId: r.operator_id || r.operatorId,
+    currentStage: r.current_stage || r.currentStage,
+    currentLocation: r.current_location || r.currentLocation,
+    stageEnteredAt: r.stage_entered_at || r.stageEnteredAt,
     createdAt: r.created_at || r.createdAt || new Date().toISOString(),
     updatedAt: r.updated_at || r.updatedAt || new Date().toISOString(),
+    progressPercent: r.progress_percent ?? r.progressPercent,
+    totalTimeMinutes: r.total_time_minutes ?? r.totalTimeMinutes,
+    scanPoints: r.scan_points ?? r.scanPoints,
     qualityIssues: r.quality_issues || r.qualityIssues || '',
     missingItems: r.missing_items || r.missingItems || '',
-    currentStage: r.current_stage || r.currentStage || r.current_machine || '',
-    currentLocation: r.current_location || r.currentLocation || '',
-    stageEnteredAt: r.stage_entered_at || r.updated_at || r.updatedAt || new Date().toISOString(),
   };
 }
 
@@ -972,20 +930,35 @@ function mapDbScan(r: any): ScanEvent {
   return {
     id: r.id,
     cardId: r.card_id || r.cardId,
-    scannedBy: r.scanned_by || r.scannedBy,
-    location: r.location,
-    stage: r.stage_name || r.stage || '',
-    timestamp: r.created_at || r.createdAt || r.timestamp || new Date().toISOString(),
-    notes: r.notes,
-    partReference: r.part_reference || r.partReference,
+    scannedBy: '',
+    location: r.machine_name || '',
+    stageName: r.event_type || '',
+    timestamp: r.timestamp || r.created_at || new Date().toISOString(),
+    notes: '',
+    partReference: '',
     eventType: r.event_type || r.eventType || 'location_update',
+  };
+}
+
+function mapDbProductionHistoryToScanEvent(r: any): ScanEvent {
+  const metadata = r.metadata ? (typeof r.metadata === 'string' ? JSON.parse(r.metadata) : r.metadata) : {};
+  return {
+    id: r.id,
+    cardId: r.card_id || r.cardId,
+    scannedBy: metadata.scannedBy || metadata.operator || '',
+    location: r.machine_name || r.station || '',
+    stageName: r.event_type || '',
+    timestamp: r.created_at || new Date().toISOString(),
+    notes: metadata.notes || r.event_type || '',
+    partReference: metadata.partReference || '',
+    eventType: r.event_type || 'location_update',
   };
 }
 
 function mapDbProduct(r: any): Product {
   return {
     id: r.id,
-    productName: r.name || r.productName,
+    productName: r.product_name || r.name || r.productName,
     description: r.description,
   };
 }
@@ -1051,7 +1024,6 @@ export async function getLoadingPlanForProduct(productId: string): Promise<Loadi
   }
   const { data, error } = await supabase.from('loading_plans').select('*').eq('product_id', productId).order('insertion_order', { ascending: true });
   if (error) {
-    console.error('getLoadingPlanForProduct failed', error);
     try {
       const raw = await AsyncStorage.getItem(`${OFFLINE_KEYS.LOADING_PLANS}_${productId}`);
       if (raw) return JSON.parse(raw);
@@ -1067,7 +1039,7 @@ export async function getComponentInsertionsForCard(cardId: string): Promise<Com
   const supabase = getSupabaseClient();
   if (!supabase) return [];
   const { data, error } = await supabase.from('component_insertions').select('*').eq('card_id', cardId).order('timestamp', { ascending: true });
-  if (error) { console.error('getComponentInsertionsForCard failed', error); return []; }
+  if (error) { return []; }
   return (data || []).map(mapDbComponentInsertion);
 }
 
@@ -1157,8 +1129,9 @@ export function getMockCard(cardId: string): ElectronicCard {
   };
 }
 
-export async function getStuckCards(cards: ElectronicCard[], thresholdHours: number): Promise<ElectronicCard[]> {
+export async function getStuckCards(cards: ElectronicCard[], thresholdMinutes: number): Promise<ElectronicCard[]> {
   const stuckCards: ElectronicCard[] = [];
+  const limitMinutes = Math.min(10, thresholdMinutes ?? 10);
   for (const card of cards) {
     if (card.status === 'completed' || card.cardId?.startsWith('TEST-')) continue;
     const timeInactiveMs = getActiveElapsedMs(
@@ -1166,9 +1139,9 @@ export async function getStuckCards(cards: ElectronicCard[], thresholdHours: num
       8,
       16
     );
-    const hoursStuck = timeInactiveMs / (1000 * 60 * 60);
-    if (hoursStuck >= thresholdHours) {
-      stuckCards.push({ ...card, progressPercent: Math.min(card.progressPercent, 100) });
+    const minutesStuck = timeInactiveMs / (1000 * 60);
+    if (minutesStuck >= limitMinutes) {
+      stuckCards.push({ ...card, progressPercent: Math.min(card.progressPercent || 0, 100) });
     }
   }
   return stuckCards;
@@ -1239,6 +1212,7 @@ export async function createIssue(issue: Partial<Issue>): Promise<Issue> {
       station: issue.station,
       priority: issue.priority,
       status: issue.status || 'open',
+      photo_url: issue.photoUrl,
     }])
     .select()
     .single();
@@ -1372,87 +1346,53 @@ function normalizeTimestamp(row: any): string {
   return row?.timestamp || row?.date_temps || row?.created_at || row?.updated_at || row?.last_seen || new Date().toISOString();
 }
 
-function mapEtatCapteur(row: any): EtatCapteur {
+function mapSensorDataRow(row: any): SensorDataRow {
   return {
-    id: row?.id ?? normalizeTimestamp(row),
-    timestamp: normalizeTimestamp(row),
-    date_temps: row?.date_temps ?? null,
-    capteur1: Number(row?.capteur1 ?? 0),
-    capteur2: Number(row?.capteur2 ?? 0),
-    capteur3: Number(row?.capteur3 ?? 0),
+    id: row?.id ?? '',
+    nodeId: row?.node_id || '',
+    sensor_1_status: Boolean(row?.sensor_1_status ?? false),
+    sensor_2_status: Boolean(row?.sensor_2_status ?? false),
+    sensor_3_status: Boolean(row?.sensor_3_status ?? false),
+    sensor_1_counter: Number(row?.sensor_1_counter ?? 0),
+    sensor_2_counter: Number(row?.sensor_2_counter ?? 0),
+    sensor_3_counter: Number(row?.sensor_3_counter ?? 0),
+    timestamp: row?.timestamp || new Date().toISOString(),
   };
 }
 
-function mapSensorEvent(row: any): any {
+function mapLossRow(row: any): LossRow {
   return {
-    id: row?.id ?? normalizeTimestamp(row),
-    sensor_id: row?.sensor_id || '',
-    gpio_pin: Number(row?.gpio_pin ?? 0),
-    state: row?.state || '',
-    scenario: row?.scenario || '',
-    raw_value: Number(row?.raw_value ?? 0),
-    created_at: row?.created_at || normalizeTimestamp(row),
-  };
-}
-
-function mapTRG(row: any): TRG {
-  return {
-    id: row?.id ?? normalizeTimestamp(row),
-    timestamp: normalizeTimestamp(row),
-    date_temps: row?.date_temps ?? null,
-    cartes_attendues: Number(row?.cartes_attendues ?? 0),
-    cartes_produites: Number(row?.cartes_produites ?? 0),
-    cartes_bonnes: Number(row?.cartes_bonnes ?? 0),
-    trg_pourcentage: Number(row?.trg_pourcentage ?? 0),
-  };
-}
-
-function mapTRS(row: any): TRS {
-  return {
-    id: row?.id ?? normalizeTimestamp(row),
-    timestamp: normalizeTimestamp(row),
-    date_temps: row?.date_temps ?? null,
-    cartes_attendues: Number(row?.cartes_attendues ?? 0),
-    cartes_produites: Number(row?.cartes_produites ?? 0),
-    cartes_bonnes: Number(row?.cartes_bonnes ?? 0),
-    trs_pourcentage: Number(row?.trs_pourcentage ?? 0),
-  };
-}
-
-function mapLoss(row: any): PertesTable {
-  return {
-    id: row?.id ?? normalizeTimestamp(row),
-    date_temps: row?.date_temps || normalizeTimestamp(row),
-    machine: row?.machine || row?.machine_name || '',
-    capteur_from: row?.capteur_from || '',
-    capteur_to: row?.capteur_to || '',
-    nb_cartes_perdues: Number(row?.nb_cartes_perdues ?? 0),
-    pertes_totale: Number(row?.pertes_totale ?? 0),
+    id: row?.id ?? '',
+    machineName: row?.machine_name || '',
+    lossCount: Number(row?.loss_count ?? 0),
+    reason: row?.reason || '',
+    lossZone: row?.loss_zone || '',
+    costTnd: Number(row?.cost_tnd ?? 0),
+    createdAt: row?.created_at || new Date().toISOString(),
   };
 }
 
 function mapConfiguration(row: any): Configuration {
   return {
-    id: Number(row?.id ?? 1),
-    nb_cartes_attendues: Number(row?.nb_cartes_attendues ?? 0),
-    gpio_capteur1: Number(row?.gpio_capteur1 ?? row?.pin_capteur_1 ?? 0),
-    gpio_capteur2: Number(row?.gpio_capteur2 ?? row?.pin_capteur_2 ?? 0),
-    gpio_capteur3: Number(row?.gpio_capteur3 ?? row?.pin_capteur_3 ?? 0),
-    machine_name: row?.machine_name || row?.nom_machine || '',
-    cycle_time_seconds: Number(row?.cycle_time_seconds ?? row?.temps_cycle ?? 0),
+    id: row?.id ?? '',
+    machine_name: row?.machine_name || 'NPM-DX-1',
+    expected_cards: Number(row?.expected_cards ?? 0),
+    cycle_time_seconds: Number(row?.cycle_time_seconds ?? 0),
+    sensor_1_gpio: Number(row?.sensor_1_gpio ?? 17),
+    sensor_2_gpio: Number(row?.sensor_2_gpio ?? 26),
+    sensor_3_gpio: Number(row?.sensor_3_gpio ?? 16),
     loss_threshold: Number(row?.loss_threshold ?? 0),
     updated_at: row?.updated_at || new Date().toISOString(),
-    serial_port: row?.serial_port || '',
   };
 }
 
 function mapArticle(row: any): Article {
   return {
-    id: row?.id ?? row?.ref_sagem ?? Math.random().toString(36),
-    ref_sagem: row?.ref_sagem || '',
+    id: row?.id ?? '',
+    reference: row?.reference || '',
     designation: row?.designation || '',
-    nb_montage: Number(row?.nb_montage ?? row?.quantite_par_carte ?? 0),
-    prix_unitaire: Number(row?.prix_unitaire ?? 0),
+    assembly_count: Number(row?.assembly_count ?? 1),
+    unit_price: Number(row?.unit_price ?? 0),
   };
 }
 
@@ -1460,254 +1400,123 @@ function mapProductionSystemNode(row: any): SystemNode {
   return {
     id: row?.id ?? row?.name ?? 'raspberry-pi-cms',
     name: row?.name || 'Raspberry Pi CMS',
-    ip_address: row?.ip_address ?? row?.ip ?? null,
-    ip: row?.ip ?? row?.ip_address ?? null,
-    status: row?.status || 'offline',
-    last_seen: row?.last_seen || normalizeTimestamp(row),
     type: row?.type || 'raspberry_pi',
-  };
-}
-
-function mapPerteParJour(row: any): PerteParJour {
-  return {
-    jour: row?.jour || '',
-    total_cartes: Number(row?.total_cartes ?? 0),
-    total_cout: Number(row?.total_cout ?? 0),
-    machine: row?.machine || '',
-  };
-}
-
-function mapProductionParJour(row: any): ProductionParJour {
-  return {
-    jour: row?.jour || '',
-    machine1: Number(row?.machine1 ?? 0),
-    machine2: Number(row?.machine2 ?? 0),
-    machine3: Number(row?.machine3 ?? 0),
-  };
-}
-
-function mapPerteParMachine(row: any): PerteParMachine {
-  return {
-    machine: row?.machine || '',
-    nb_incidents: Number(row?.nb_incidents ?? 0),
-    total_cartes_perdues: Number(row?.total_cartes_perdues ?? 0),
-    cout_total: Number(row?.cout_total ?? 0),
+    status: row?.status || 'offline',
+    location: row?.location ?? null,
+    ip_address: row?.ip_address ?? null,
+    mac_address: row?.mac_address ?? null,
+    cpu_usage: row?.cpu_usage ?? null,
+    memory_usage: row?.memory_usage ?? null,
+    temperature: row?.temperature ?? null,
+    last_seen: row?.last_seen || normalizeTimestamp(row),
   };
 }
 
 function getTodayBounds() {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
-  return { start, end };
+  return sharedGetTodayBounds();
 }
 
-export async function getLatestSensorState(): Promise<EtatCapteur> {
+export async function getLatestSensorState(): Promise<SensorDataRow> {
   const supabase = getSupabaseClient();
   if (!supabase) {
     return {
-      id: 0,
+      id: '',
+      nodeId: 'PI5-NODE-01',
+      sensor_1_status: false,
+      sensor_2_status: false,
+      sensor_3_status: false,
+      sensor_1_counter: 0,
+      sensor_2_counter: 0,
+      sensor_3_counter: 0,
       timestamp: new Date().toISOString(),
-      date_temps: null,
-      capteur1: 0,
-      capteur2: 0,
-      capteur3: 0,
     };
   }
 
   try {
-    // Get the latest sensor events for each sensor
-    const { data: events, error } = await supabase
-      .from('sensor_events')
-      .select('sensor_id, raw_value, created_at, gpio_pin')
-      .order('created_at', { ascending: false })
-      .limit(10);  // Get enough to ensure we have latest for each sensor
+    const { data, error } = await supabase
+      .from('sensor_data')
+      .select('*')
+      .order('timestamp', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
     if (error) throw error;
-
-    // Aggregate into single state object - take first occurrence of each sensor
-    const state: Record<string, number> = {
-      capteur1: 0,
-      capteur2: 0,
-      capteur3: 0,
-    };
-
-    const sensorMap = new Map<string, any>();
-    const timestamps = new Map<string, string>();
-
-    for (const event of events || []) {
-      if (!sensorMap.has(event.sensor_id)) {
-        sensorMap.set(event.sensor_id, event);
-        timestamps.set(event.sensor_id, event.created_at);
-        state[event.sensor_id] = event.raw_value;
-      }
-    }
-
-    // Use the most recent timestamp from all sensors
-    let latestTimestamp = new Date().toISOString();
-    let maxTime = 0;
-    timestamps.forEach((ts) => {
-      const time = new Date(ts).getTime();
-      if (time > maxTime) {
-        maxTime = time;
-        latestTimestamp = ts;
-      }
-    });
-
-    return {
-      id: Date.now(),
-      timestamp: latestTimestamp,
-      date_temps: latestTimestamp,
-      capteur1: state.capteur1,
-      capteur2: state.capteur2,
-      capteur3: state.capteur3,
+    return data ? mapDbSensorEvent(data) : {
+      id: '',
+      nodeId: 'sensor_data',
+      sensor_1_status: false,
+      sensor_2_status: false,
+      sensor_3_status: false,
+      sensor_1_counter: 0,
+      sensor_2_counter: 0,
+      sensor_3_counter: 0,
+      timestamp: new Date().toISOString(),
     };
   } catch (error) {
     console.error('getLatestSensorState failed', error);
     return {
-      id: 0,
+      id: '',
+      nodeId: 'sensor_data',
+      sensor_1_status: false,
+      sensor_2_status: false,
+      sensor_3_status: false,
+      sensor_1_counter: 0,
+      sensor_2_counter: 0,
+      sensor_3_counter: 0,
       timestamp: new Date().toISOString(),
-      date_temps: null,
-      capteur1: 0,
-      capteur2: 0,
-      capteur3: 0,
     };
   }
 }
 
-export async function getLatestSensorStates(limit = 2): Promise<EtatCapteur[]> {
+export async function getLatestSensorStates(limit = 2): Promise<SensorDataRow[]> {
   const supabase = getSupabaseClient();
   if (!supabase) return [];
 
   try {
-    // Get recent sensor events (last 5 minutes)
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-
-    const { data: events, error } = await supabase
-      .from('sensor_events')
+    const { data, error } = await supabase
+      .from('sensor_data')
       .select('*')
-      .gte('created_at', fiveMinutesAgo)
-      .order('created_at', { ascending: false });
+      .order('timestamp', { ascending: false })
+      .limit(limit);
 
     if (error) throw error;
-
-    // Group events by time bucket (e.g., 1 second intervals)
-    const buckets = new Map<string, Map<string, number>>();
-    const bucketTimestamps = new Map<string, string>();
-
-    for (const event of events || []) {
-      // Round timestamp to nearest second
-      const bucketTime = new Date(new Date(event.created_at).getTime() - (new Date(event.created_at).getTime() % 1000));
-      const bucketKey = bucketTime.toISOString();
-
-      if (!buckets.has(bucketKey)) {
-        buckets.set(bucketKey, new Map());
-        bucketTimestamps.set(bucketKey, event.created_at);
-      }
-
-      const bucket = buckets.get(bucketKey)!;
-      if (!bucket.has(event.sensor_id)) {
-        bucket.set(event.sensor_id, event.raw_value);
-      }
-    }
-
-    // Convert buckets to EtatCapteur array
-    const states: EtatCapteur[] = [];
-    const sortedBuckets = Array.from(buckets.entries())
-      .sort((a, b) => new Date(b[0]).getTime() - new Date(a[0]).getTime())
-      .slice(0, limit);
-
-    for (const [bucketKey, bucket] of sortedBuckets) {
-      states.push({
-        id: states.length,
-        timestamp: bucketKey,
-        date_temps: bucketTimestamps.get(bucketKey) || bucketKey,
-        capteur1: bucket.get('capteur1') || 0,
-        capteur2: bucket.get('capteur2') || 0,
-        capteur3: bucket.get('capteur3') || 0,
-      });
-    }
-
-    return states;
+    return (data || []).map(mapDbSensorEvent);
   } catch (error) {
     console.error('getLatestSensorStates failed', error);
     return [];
   }
 }
 
-export async function getLatestEtatCapteur(limit = 2): Promise<EtatCapteur[]> {
-  // Gracefully fallback to real-time events aggregation
-  const realTimeStates = await getLatestSensorStates(limit);
-  if (realTimeStates.length > 0) return realTimeStates;
-
-  const supabase = getSupabaseClient();
-  if (!supabase) return [];
-
-  try {
-    const { data, error } = await (supabase.from('etat_capteur') as any)
-      .select('*')
-      .order('date_temps', { ascending: false })
-      .limit(limit);
-
-    if (error) throw error;
-    return (data || []).map(mapEtatCapteur);
-  } catch (error) {
-    console.error('getLatestEtatCapteur failed', error);
-    return [];
-  }
+export async function getLatestSensorEvents(limit = 100): Promise<SensorDataRow[]> {
+  return getLatestSensorStates(limit);
 }
 
-export async function getLatestSensorEvents(limit = 100): Promise<any[]> {
-  const supabase = getSupabaseClient();
-  if (!supabase) return [];
-
-  try {
-    const { data, error } = await (supabase.from('sensor_events') as any)
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(limit);
-
-    if (error) throw error;
-    return (data || []).map(mapSensorEvent);
-  } catch (error) {
-    console.error('getLatestSensorEvents failed', error);
-    return [];
-  }
-}
-
-export async function getLatestTRG(): Promise<TRG | null> {
+export async function getLatestProductionPerformance(): Promise<ProductionPerformanceRow | null> {
   const supabase = getSupabaseClient();
   if (!supabase) return null;
 
   try {
-    const { data, error } = await (supabase.from('trg_latest') as any)
+    const { data, error } = await supabase
+      .from('production_performance')
       .select('*')
+      .order('timestamp', { ascending: false })
+      .limit(1)
       .maybeSingle();
 
     if (error) throw error;
-    return data ? mapTRG(data) : null;
+    return data ? mapProductionPerformanceRow(data) : null;
   } catch (error) {
-    console.error('getLatestTRG failed', error);
+    console.error('getLatestProductionPerformance failed', error);
     return null;
   }
 }
 
-export async function getLatestTRS(): Promise<TRS | null> {
-  const supabase = getSupabaseClient();
-  if (!supabase) return null;
+export async function getLatestOOE(): Promise<ProductionPerformanceRow | null> {
+  return getLatestProductionPerformance();
+}
 
-  try {
-    const { data, error } = await (supabase.from('trs_latest') as any)
-      .select('*')
-      .maybeSingle();
-
-    if (error) throw error;
-    return data ? mapTRS(data) : null;
-  } catch (error) {
-    console.error('getLatestTRS failed', error);
-    return null;
-  }
+export async function getLatestOEE(): Promise<ProductionPerformanceRow | null> {
+  return getLatestProductionPerformance();
 }
 
 export async function getTodayLossesSummary(): Promise<TodayLossSummary> {
@@ -1716,35 +1525,49 @@ export async function getTodayLossesSummary(): Promise<TodayLossSummary> {
 
   try {
     const { start, end } = getTodayBounds();
+    const { data: lostCards, error: lostError } = await supabase
+      .from('electronic_cards')
+      .select('id, product_id')
+      .in('status', ['cancelled', 'blocked', 'removed'])
+      .gte('created_at', start.toISOString())
+      .lt('created_at', end.toISOString());
 
-    const { data, error } = await (supabase.from('pertes_table') as any)
-      .select('nb_cartes_perdues, pertes_totale, date_temps')
-      .gte('date_temps', start.toISOString())
-      .lt('date_temps', end.toISOString());
+    if (lostError) throw lostError;
 
-    if (error) throw error;
+    const totalCards = (lostCards || []).length;
+    let totalCost = 0;
 
-    return (data || []).reduce(
-      (summary: TodayLossSummary, row: any) => ({
-        totalCards: summary.totalCards + Number(row?.nb_cartes_perdues ?? 0),
-        totalCost: summary.totalCost + Number(row?.pertes_totale ?? 0),
-      }),
-      { totalCards: 0, totalCost: 0 }
-    );
+    if (totalCards > 0) {
+      const productIds = [...new Set(lostCards.map((c: any) => c.product_id).filter(Boolean))];
+      const { data: articles, error: articlesError } = await supabase
+        .from('articles')
+        .select('unit_price, assembly_count')
+        .in('id', productIds.length > 0 ? productIds : ['none']);
+      if (!articlesError && articles && articles.length > 0) {
+        const costPerCard = articles.reduce(
+          (sum, a) => sum + (Number(a.unit_price || 0) * Number(a.assembly_count || 0)),
+          0
+        );
+        totalCost = totalCards * costPerCard;
+      }
+    }
+
+    return { totalCards, totalCost };
   } catch (error) {
     console.error('getTodayLossesSummary failed', error);
     return { totalCards: 0, totalCost: 0 };
   }
 }
 
-export async function getLosses(limit?: number): Promise<PertesTable[]> {
+export async function getLosses(limit?: number): Promise<LossRow[]> {
   const supabase = getSupabaseClient();
   if (!supabase) return [];
 
   try {
-    let query = (supabase.from('pertes_table') as any)
+    let query = supabase
+      .from('losses')
       .select('*')
-      .order('date_temps', { ascending: false });
+      .order('created_at', { ascending: false });
 
     if (typeof limit === 'number') {
       query = query.limit(limit);
@@ -1752,64 +1575,212 @@ export async function getLosses(limit?: number): Promise<PertesTable[]> {
 
     const { data, error } = await query;
     if (error) throw error;
-    return (data || []).map(mapLoss);
+    return (data || []).map(mapLossRow);
   } catch (error) {
     console.error('getLosses failed', error);
     return [];
   }
 }
 
-export async function getDailyLossesStats(): Promise<PerteParJour[]> {
+/**
+ * Enforces dynamic cost calculation logic for all losses,
+ * preventing manual cost overrides by querying the articles table
+ * for accurate unit prices and assembly counts.
+ */
+export async function recordLoss(loss: {
+  machineName: string;
+  lossZone: string;
+  lossCount: number;
+  reason?: string;
+  productId?: string;
+}): Promise<boolean> {
   const supabase = getSupabaseClient();
-  if (!supabase) return getMockDailyLossesStats();
+  if (!supabase) return false;
 
   try {
-    const { data, error } = await (supabase.from('pertes_par_jour') as any)
-      .select('*')
-      .order('jour', { ascending: true });
+    let costTnd: number | undefined;
+
+    if (loss.productId) {
+      costTnd = await calculateMaterialCost(loss.productId, loss.lossCount);
+    }
+
+    // Fallback: sum unit_price * assembly_count for the specific product's article
+    // Used when no productId given, or the loading_plans table doesn't exist
+    if (!costTnd) {
+      const productIds = loss.productId ? [loss.productId] : [];
+      const articleQuery = supabase.from('articles').select('unit_price, assembly_count');
+      if (productIds.length > 0) {
+        articleQuery.in('id', productIds);
+      }
+      const { data: articles, error: articlesError } = await articleQuery;
+      if (articlesError) throw articlesError;
+      const costPerCard = (articles || []).reduce(
+        (sum, a) => sum + (Number(a.unit_price || 0) * Number(a.assembly_count || 0)),
+        0
+      );
+      costTnd = loss.lossCount * costPerCard;
+    }
+
+    const { error } = await supabase
+      .from('losses')
+      .insert({
+        machine_name: loss.machineName,
+        loss_zone: loss.lossZone,
+        loss_count: loss.lossCount,
+        cost_tnd: costTnd,
+        reason: loss.reason || null,
+      });
 
     if (error) throw error;
-    if (!data || data.length === 0) return getMockDailyLossesStats();
-    return (data || []).map(mapPerteParJour);
+    return true;
   } catch (error) {
-    console.error('getDailyLossesStats failed, returning mock data', error);
-    return getMockDailyLossesStats();
+    console.error('recordLoss failed:', error);
+    return false;
   }
 }
 
-export async function getDailyProductionStats(): Promise<ProductionParJour[]> {
+function mapProductionPerformanceRow(row: any): ProductionPerformanceRow {
+  return {
+    id: row?.id ?? '',
+    machine_name: row?.machine_name || '',
+    target_count: Number(row?.target_count ?? 0),
+    actual_count: Number(row?.actual_count ?? 0),
+    good_count:   Number(row?.good_count ?? 0),
+    loss_count: Number(row?.loss_count ?? 0),
+    trg_percentage: Number(row?.OOE_percentage ?? row?.trg_percentage ?? 0),
+    trs_percentage: Number(row?.OEE_percentage ?? row?.trs_percentage ?? 0),
+    date: row?.date || '',
+    timestamp: row?.timestamp || new Date().toISOString(),
+  };
+}
+
+export async function getDailyLossesStats(): Promise<{ jour: string; total_cartes: number; machine: string; total_cout: number }[]> {
   const supabase = getSupabaseClient();
-  if (!supabase) return getMockDailyProductionStats();
+  if (!supabase) return [];
 
   try {
-    const { data, error } = await (supabase.from('production_par_jour') as any)
-      .select('*')
-      .order('jour', { ascending: true });
+    const { data, error } = await supabase
+      .from('daily_losses')
+      .select('day, total_cards, total_cost')
+      .order('day', { ascending: true });
 
     if (error) throw error;
-    if (!data || data.length === 0) return getMockDailyProductionStats();
-    return (data || []).map(mapProductionParJour);
+    return (data || []).map((row: any) => ({
+      jour: (row.day || '').split('T')[0],
+      total_cartes: Number(row.total_cards ?? 0),
+      total_cout: Number(row.total_cost ?? 0),
+      machine: 'NPM-DX-1',
+    }));
   } catch (error) {
-    console.error('getDailyProductionStats failed, returning mock data', error);
-    return getMockDailyProductionStats();
+    console.error('getDailyLossesStats failed, trying fallback', error);
+    try {
+      // Include both scrap losses and lost electronic_cards
+      const [lossesData, cardsData, articlesData] = await Promise.all([
+        supabase.from('losses').select('created_at, loss_count, cost_tnd'),
+        supabase.from('electronic_cards').select('status, product_id, created_at').in('status', ['cancelled', 'blocked', 'removed']),
+        supabase.from('articles').select('id, unit_price, assembly_count'),
+      ]);
+
+      const dayMap = new Map<string, { cartes: number; cout: number }>();
+
+      // Add scrap losses
+      for (const row of lossesData.data || []) {
+        const jour = (row.created_at || '').split('T')[0];
+        const existing = dayMap.get(jour) || { cartes: 0, cout: 0 };
+        existing.cartes += Number(row.loss_count ?? 0);
+        existing.cout += Number(row.cost_tnd ?? 0);
+        dayMap.set(jour, existing);
+      }
+
+      // Compute cost per article (used for lost cards without product cost)
+      const articles = articlesData.data || [];
+      const articleCostMap = new Map<string, number>();
+      let totalAllArticlesCost = 0;
+      for (const a of articles) {
+        const cost = Number(a.unit_price || 0) * Number(a.assembly_count || 0);
+        articleCostMap.set(a.id, cost);
+        totalAllArticlesCost += cost;
+      }
+
+      // Add lost cards
+      for (const row of cardsData.data || []) {
+        const jour = (row.created_at || '').split('T')[0];
+        const existing = dayMap.get(jour) || { cartes: 0, cout: 0 };
+        existing.cartes += 1;
+        const productCost = row.product_id ? articleCostMap.get(row.product_id) : null;
+        existing.cout += productCost ?? totalAllArticlesCost;
+        dayMap.set(jour, existing);
+      }
+
+      return Array.from(dayMap.entries())
+        .map(([jour, v]) => ({
+          jour,
+          total_cartes: v.cartes,
+          total_cout: v.cout,
+          machine: 'NPM-DX-1',
+        }))
+        .sort((a, b) => a.jour.localeCompare(b.jour));
+    } catch (fallbackError) {
+      console.error('Fallback getDailyLossesStats failed', fallbackError);
+      return [];
+    }
   }
 }
 
-export async function getLossesByMachineStats(): Promise<PerteParMachine[]> {
+export async function getDailyProductionStats(): Promise<{ jour: string; total: number; machine: string }[]> {
   const supabase = getSupabaseClient();
-  if (!supabase) return getMockLossesByMachineStats();
+  if (!supabase) return [];
 
   try {
-    const { data, error } = await (supabase.from('pertes_par_machine') as any)
-      .select('*')
-      .order('cout_total', { ascending: false });
+    const { data, error } = await supabase
+      .from('production_performance')
+      .select('date, actual_count, machine_name')
+      .order('date', { ascending: true });
 
     if (error) throw error;
-    if (!data || data.length === 0) return getMockLossesByMachineStats();
-    return (data || []).map(mapPerteParMachine);
+    if (!data || data.length === 0) return [];
+
+    return data.map((row: any) => ({
+      jour: row.date,
+      total: Number(row.actual_count ?? 0),
+      machine: row.machine_name || 'NPM-DX-1',
+    }));
   } catch (error) {
-    console.error('getLossesByMachineStats failed, returning mock data', error);
-    return getMockLossesByMachineStats();
+    console.error('getDailyProductionStats failed', error);
+    return [];
+  }
+}
+
+export async function getLossesByMachineStats(): Promise<{ machine: string; nb_incidents: number; total_cartes_perdues: number }[]> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+
+  try {
+    const { data, error } = await supabase
+      .from('losses')
+      .select('machine_name, loss_count')
+      .order('machine_name', { ascending: true });
+
+    if (error) throw error;
+    if (!data || data.length === 0) return [];
+
+    const machineMap = new Map<string, { incidents: number; cards: number }>();
+    for (const row of data) {
+      const m = row.machine_name || 'Unknown';
+      const existing = machineMap.get(m) || { incidents: 0, cards: 0 };
+      existing.incidents += 1;
+      existing.cards += Number(row.loss_count ?? 0);
+      machineMap.set(m, existing);
+    }
+
+    return Array.from(machineMap.entries()).map(([machine, stats]) => ({
+      machine,
+      nb_incidents: stats.incidents,
+      total_cartes_perdues: stats.cards,
+    }));
+  } catch (error) {
+    console.error('getLossesByMachineStats failed', error);
+    return [];
   }
 }
 
@@ -1818,12 +1789,14 @@ export async function getCardUnitCost(): Promise<number> {
   if (!supabase) return 0;
 
   try {
-    const { data, error } = await (supabase.from('cout_carte') as any)
-      .select('cout_total')
+    const { data, error } = await supabase
+      .from('articles')
+      .select('unit_price')
+      .limit(1)
       .maybeSingle();
 
     if (error) throw error;
-    return data ? Number(data.cout_total ?? 0) : 0;
+    return data ? Number(data.unit_price ?? 0) : 0;
   } catch (error) {
     console.error('getCardUnitCost failed', error);
     return 0;
@@ -1835,9 +1808,9 @@ export async function getPiStatus(): Promise<SystemNode | null> {
   if (!supabase) return null;
 
   try {
-    const { data, error } = await (supabase.from('system_nodes') as any)
+    const { data, error } = await supabase
+      .from('system_nodes')
       .select('*')
-      .eq('name', 'Raspberry Pi CMS')
       .order('last_seen', { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -1855,9 +1828,11 @@ export async function getConfiguration(): Promise<Configuration | null> {
   if (!supabase) return null;
 
   try {
-    const { data, error } = await (supabase.from('configuration') as any)
+    const { data, error } = await supabase
+      .from('configuration')
       .select('*')
-      .eq('id', 1)
+      .order('updated_at', { ascending: false })
+      .limit(1)
       .maybeSingle();
 
     if (error) throw error;
@@ -1873,21 +1848,24 @@ export async function updateConfiguration(updates: Partial<Configuration>): Prom
   if (!supabase) return null;
 
   try {
+    const current = await getConfiguration();
+    if (!current) return null;
+
     const payload: Record<string, unknown> = {};
 
-    if (updates.nb_cartes_attendues !== undefined) payload.nb_cartes_attendues = updates.nb_cartes_attendues;
-    if (updates.gpio_capteur1 !== undefined) payload.gpio_capteur1 = updates.gpio_capteur1;
-    if (updates.gpio_capteur2 !== undefined) payload.gpio_capteur2 = updates.gpio_capteur2;
-    if (updates.gpio_capteur3 !== undefined) payload.gpio_capteur3 = updates.gpio_capteur3;
+    if (updates.expected_cards !== undefined) payload.expected_cards = updates.expected_cards;
+    if (updates.sensor_1_gpio !== undefined) payload.sensor_1_gpio = updates.sensor_1_gpio;
+    if (updates.sensor_2_gpio !== undefined) payload.sensor_2_gpio = updates.sensor_2_gpio;
+    if (updates.sensor_3_gpio !== undefined) payload.sensor_3_gpio = updates.sensor_3_gpio;
     if (updates.machine_name !== undefined) payload.machine_name = updates.machine_name;
     if (updates.cycle_time_seconds !== undefined) payload.cycle_time_seconds = updates.cycle_time_seconds;
     if (updates.loss_threshold !== undefined) payload.loss_threshold = updates.loss_threshold;
-    if (updates.serial_port !== undefined) payload.serial_port = updates.serial_port;
     payload.updated_at = new Date().toISOString();
 
-    const { data, error } = await (supabase.from('configuration') as any)
+    const { data, error } = await supabase
+      .from('configuration')
       .update(payload)
-      .eq('id', 1)
+      .eq('id', current.id)
       .select('*')
       .maybeSingle();
 
@@ -1904,9 +1882,10 @@ export async function getArticles(): Promise<Article[]> {
   if (!supabase) return [];
 
   try {
-    const { data, error } = await (supabase.from('articles') as any)
+    const { data, error } = await supabase
+      .from('articles')
       .select('*')
-      .order('ref_sagem', { ascending: true });
+      .order('reference', { ascending: true });
 
     if (error) throw error;
     return (data || []).map(mapArticle);
@@ -1922,13 +1901,14 @@ export async function addArticle(article: Omit<Article, 'id'>): Promise<Article 
 
   try {
     const payload = {
-      ref_sagem: article.ref_sagem,
+      reference: article.reference,
       designation: article.designation,
-      nb_montage: article.nb_montage,
-      prix_unitaire: article.prix_unitaire,
+      assembly_count: article.assembly_count,
+      unit_price: article.unit_price,
     };
 
-    const { data, error } = await (supabase.from('articles') as any)
+    const { data, error } = await supabase
+      .from('articles')
       .insert(payload)
       .select('*')
       .maybeSingle();
@@ -1946,7 +1926,8 @@ export async function deleteArticle(id: string | number): Promise<boolean> {
   if (!supabase) return false;
 
   try {
-    const { error } = await (supabase.from('articles') as any)
+    const { error } = await supabase
+      .from('articles')
       .delete()
       .eq('id', id);
 
@@ -1956,6 +1937,27 @@ export async function deleteArticle(id: string | number): Promise<boolean> {
     console.error('deleteArticle failed', error);
     return false;
   }
+}
+
+interface PerteParJour {
+  jour: string;
+  total_cartes: number;
+  total_cout: number;
+  machine: string;
+}
+
+interface ProductionParJour {
+  jour: string;
+  machine1: number;
+  machine2: number;
+  machine3: number;
+}
+
+interface PerteParMachine {
+  machine: string;
+  nb_incidents: number;
+  total_cartes_perdues: number;
+  cout_total: number;
 }
 
 function getMockDailyLossesStats(): PerteParJour[] {
@@ -2051,7 +2053,6 @@ export async function calculateMaterialCost(productId: string | null | undefined
       .eq('product_id', productId);
 
     if (plansError || !plans || plans.length === 0) {
-      if (plansError) console.error('calculateMaterialCost: Error fetching loading plans', plansError);
       return 0;
     }
 
@@ -2060,8 +2061,8 @@ export async function calculateMaterialCost(productId: string | null | undefined
 
     const { data: articles, error: articlesError } = await supabase
       .from('articles')
-      .select('ref_sagem, prix_unitaire')
-      .in('ref_sagem', partRefs);
+      .select('reference, unit_price')
+      .in('reference', partRefs);
 
     if (articlesError || !articles) {
       console.error('calculateMaterialCost: Error fetching articles', articlesError);
@@ -2070,7 +2071,7 @@ export async function calculateMaterialCost(productId: string | null | undefined
 
     const priceMap = new Map<string, number>();
     articles.forEach((art: any) => {
-      priceMap.set(art.ref_sagem, Number(art.prix_unitaire || 0));
+      priceMap.set(art.reference, Number(art.unit_price || 0));
     });
 
     let materialCostPerCard = 0;
@@ -2087,62 +2088,14 @@ export async function calculateMaterialCost(productId: string | null | undefined
 }
 
 export async function calculateBatchCost(batchId: string): Promise<number> {
-  const supabase = getSupabaseClient();
-  if (!supabase) return 0;
-
-  try {
-    const { data: batchData, error: batchError } = await supabase
-      .from('production_batches')
-      .select('*')
-      .eq('id', batchId)
-      .maybeSingle();
-
-    if (batchError || !batchData) {
-      console.error('calculateBatchCost: Batch not found', batchError);
-      return 0;
-    }
-
-    const batch = batchData as ProductionBatch;
-    const targetQuantity = Number(batch.target_quantity || 0);
-    const goodQuantity = Number(batch.good_quantity || 0);
-    const wasteQuantity = Number(batch.waste_quantity || 0);
-    if (targetQuantity <= 0) return 0;
-
-    const productId = await resolveBatchProductId(batch);
-    const materialCost = await calculateMaterialCost(productId, targetQuantity);
-    const wasteCost = wasteQuantity * (materialCost / targetQuantity);
-    const totalCost = materialCost + wasteCost;
-    const costPerCard = goodQuantity > 0 ? totalCost / goodQuantity : 0;
-
-    const { error: updateError } = await supabase
-      .from('production_batches')
-      .update({ cost_per_card: costPerCard })
-      .eq('id', batchId);
-
-    if (updateError) {
-      console.error('calculateBatchCost: Error updating batch cost', updateError);
-    }
-
-    return costPerCard;
-  } catch (error) {
-    console.error('calculateBatchCost failed:', error);
-    return 0;
-  }
+  return 0;
 }
 
-// Maps a raw Supabase sensor_events row to SensorEvent type
-function mapDbSensorEvent(row: Record<string, unknown>): SensorEvent {
-  return {
-    id: Number(row.id),
-    sensor_id: row.sensor_id as SensorEvent['sensor_id'],
-    gpio_pin: Number(row.gpio_pin ?? 0),
-    state: (row.state ?? 'LOW') as SensorEvent['state'],
-    scenario: String(row.scenario ?? ''),
-    raw_value: Number(row.raw_value ?? 0),
-    counter: Number(row.counter ?? 0),
-    created_at: String(row.created_at ?? ''),
-    recorded_at: String(row.recorded_at ?? row.created_at ?? ''),
-  };
+export function sensorIdToPosition(sensorId: string): 1 | 2 | 3 | null {
+  if (sensorId === 'capteur1' || sensorId === 'sensor1' || sensorId === 'sensor_1_status') return 1;
+  if (sensorId === 'capteur2' || sensorId === 'sensor2' || sensorId === 'sensor_2_status') return 2;
+  if (sensorId === 'capteur3' || sensorId === 'sensor3' || sensorId === 'sensor_3_status') return 3;
+  return null;
 }
 
 export interface SensorReading {
@@ -2152,17 +2105,6 @@ export interface SensorReading {
   counter: number;
   recordedAt: string | null;
   gpioPin: number;
-}
-
-function getSensorPosition(sensorId: string): 1 | 2 | 3 | null {
-  if (sensorId === 'capteur1' || sensorId === 'sensor1') return 1;
-  if (sensorId === 'capteur2' || sensorId === 'sensor2') return 2;
-  if (sensorId === 'capteur3' || sensorId === 'sensor3') return 3;
-  return null;
-}
-
-export function sensorIdToPosition(sensorId: string): 1 | 2 | 3 | null {
-  return getSensorPosition(sensorId);
 }
 
 function emptyReading(position: 1 | 2 | 3): SensorReading {
@@ -2181,40 +2123,18 @@ export async function fetchLatestSensorStates(): Promise<SensorReading[]> {
   if (!supabase) return [emptyReading(1), emptyReading(2), emptyReading(3)];
 
   const { data, error } = await supabase
-    .from('v_latest_sensor_states')
-    .select('sensor_id, state, counter, recorded_at, gpio_pin')
-    .in('sensor_id', [
-      'capteur1','capteur2','capteur3',
-      'sensor1','sensor2','sensor3',
-    ]);
+    .from('sensor_data')
+    .select('*')
+    .order('timestamp', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   if (error || !data) return [emptyReading(1), emptyReading(2), emptyReading(3)];
 
-  const map: Record<number, SensorReading> = {};
-
-  for (const row of data) {
-    const pos = getSensorPosition(row.sensor_id);
-    if (!pos) continue;
-    const existing = map[pos];
-    const rowTs = row.recorded_at ? new Date(row.recorded_at).getTime() : 0;
-    const existTs = existing?.recordedAt
-      ? new Date(existing.recordedAt).getTime() : -1;
-    if (!existing || rowTs > existTs) {
-      map[pos] = {
-        position: pos,
-        sensorId: row.sensor_id,
-        state: row.state as 'HIGH' | 'LOW',
-        counter: row.counter ?? 0,
-        recordedAt: row.recorded_at,
-        gpioPin: row.gpio_pin ?? 0,
-      };
-    }
-  }
-
   return [
-    map[1] ?? emptyReading(1),
-    map[2] ?? emptyReading(2),
-    map[3] ?? emptyReading(3),
+    { position: 1, sensorId: 'sensor1', state: data.sensor_1_status ? 'HIGH' : 'LOW', counter: Number(data.sensor_1_counter ?? 0), recordedAt: data.timestamp, gpioPin: 17 },
+    { position: 2, sensorId: 'sensor2', state: data.sensor_2_status ? 'HIGH' : 'LOW', counter: Number(data.sensor_2_counter ?? 0), recordedAt: data.timestamp, gpioPin: 26 },
+    { position: 3, sensorId: 'sensor3', state: data.sensor_3_status ? 'HIGH' : 'LOW', counter: Number(data.sensor_3_counter ?? 0), recordedAt: data.timestamp, gpioPin: 16 },
   ];
 }
 
@@ -2228,17 +2148,13 @@ export interface ProductionKPIs {
   trgPercent: number;
   trsPercent: number;
   machineName: string;
-  shiftStart: string;
-  shiftEnd: string;
 }
 
 export function computeKPIs(
   sensors: SensorReading[],
   config: {
-    nb_cartes_attendues: number;
+    expected_cards: number;
     machine_name: string;
-    shift_start: string;
-    shift_end: string;
   }
 ): ProductionKPIs {
   const c1 = sensors.find(s => s.position === 1)?.counter ?? 0;
@@ -2248,13 +2164,15 @@ export function computeKPIs(
   const lossZone1to2 = Math.max(0, c1 - c2);
   const lossZone2to3 = Math.max(0, c2 - c3);
   const totalLosses = lossZone1to2 + lossZone2to3;
-  const cardsProduced = c3;
-  const cardsGood = Math.max(0, cardsProduced - totalLosses);
-  const cardsExpected = config.nb_cartes_attendues;
+  // cardsProduced = c1: how many cards ENTERED the line (started production)
+  // cardsGood     = c3: how many cards EXITED  the line (finished successfully)
+  const cardsProduced = c1;
+  const cardsGood = c3;
+  const cardsExpected = config.expected_cards;
 
-  const trgPercent = cardsExpected > 0
-    ? Math.min(100, Math.round((cardsGood / cardsExpected) * 100))
-    : 0;
+  // OOE: good finished output vs the expected batch target
+
+  // OEE: yield rate — what fraction of entered cards made it out successfully
   const trsPercent = cardsProduced > 0
     ? Math.min(100, Math.round((cardsGood / cardsProduced) * 100))
     : 0;
@@ -2264,8 +2182,6 @@ export function computeKPIs(
     totalLosses, lossZone1to2, lossZone2to3,
     trgPercent, trsPercent,
     machineName: config.machine_name,
-    shiftStart: config.shift_start,
-    shiftEnd: config.shift_end,
   };
 }
 
@@ -2286,52 +2202,58 @@ export async function fetchSensorEventCountsToday(): Promise<SensorEventCountTod
 
   if (!supabase) return empty;
 
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-
   const { data, error } = await supabase
-    .from('sensor_events')
-    .select('sensor_id')
-    .gte('recorded_at', start.toISOString())
-    .in('sensor_id', [
-      'capteur1', 'capteur2', 'capteur3',
-      'sensor1', 'sensor2', 'sensor3',
-    ]);
+    .from('sensor_data')
+    .select('sensor_1_counter, sensor_2_counter, sensor_3_counter')
+    .order('timestamp', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   if (error || !data) return empty;
 
-  const counts: Record<number, number> = { 1: 0, 2: 0, 3: 0 };
-  for (const row of data) {
-    const position = getSensorPosition(row.sensor_id);
-    if (position) counts[position] += 1;
-  }
-
-  return ([1, 2, 3] as const).map((position) => ({
-    position,
-    label: labels[position],
-    count: counts[position],
-  }));
+  return [
+    { position: 1, label: labels[1], count: Number(data.sensor_1_counter ?? 0) },
+    { position: 2, label: labels[2], count: Number(data.sensor_2_counter ?? 0) },
+    { position: 3, label: labels[3], count: Number(data.sensor_3_counter ?? 0) },
+  ];
 }
 
-export async function fetchSensorEventsLast24h(): Promise<SensorEvent[]> {
+export async function fetchSensorEventsLast24h() {
+  return [];
+}
+
+export interface TodayProductionStats {
+  totalProduced: number;
+  totalLosses: number;
+  lossZone1to2: number;
+  lossZone2to3: number;
+}
+
+export async function fetchTodayProductionStats(): Promise<TodayProductionStats> {
+  const sensor = await getLatestSensorState();
+  const c1 = sensor.sensor_1_counter ?? 0;
+  const c2 = sensor.sensor_2_counter ?? 0;
+  const c3 = sensor.sensor_3_counter ?? 0;
+
+  const lossZone1to2 = Math.max(0, c1 - c2);
+  const lossZone2to3 = Math.max(0, c2 - c3);
+
   const supabase = getSupabaseClient();
-  if (!supabase) return [];
+  let totalLosses = lossZone1to2 + lossZone2to3;
+  if (supabase) {
+    const { start, end } = getTodayBounds();
+    const { data } = await supabase
+      .from('losses')
+      .select('loss_count')
+      .gte('created_at', start.toISOString())
+      .lt('created_at', end.toISOString());
+    if (data) {
+      totalLosses = data.reduce((sum, row) => sum + Number(row.loss_count ?? 0), 0);
+    }
+  }
 
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-
-  const { data, error } = await supabase
-    .from('sensor_events')
-    .select('*')
-    .gte('recorded_at', since)
-    .in('sensor_id', [
-      'capteur1', 'capteur2', 'capteur3',
-      'sensor1', 'sensor2', 'sensor3',
-    ])
-    .order('recorded_at', { ascending: true })
-    .limit(500);
-
-  if (error || !data) return [];
-  return data.map(mapDbSensorEvent);
+  const totalProduced = c3;
+  return { totalProduced, totalLosses, lossZone1to2, lossZone2to3 };
 }
 
 export interface DailyReportSummary {
@@ -2364,22 +2286,31 @@ export async function fetchDailyReportSummaries(limit = 10): Promise<DailyReport
   return data as DailyReportSummary[];
 }
 
-// Fetches recent sensor event history (newest first, no SYSTEM rows)
-export async function fetchSensorHistory(limit = 100): Promise<SensorEvent[]> {
+function mapDbSensorEvent(row: any): SensorDataRow {
+  return {
+    id: row?.id || '',
+    nodeId: row?.node_id || row?.nodeId || '',
+    sensor_1_status: !!row?.sensor_1_status,
+    sensor_2_status: !!row?.sensor_2_status,
+    sensor_3_status: !!row?.sensor_3_status,
+    sensor_1_counter: Number(row?.sensor_1_counter ?? 0),
+    sensor_2_counter: Number(row?.sensor_2_counter ?? 0),
+    sensor_3_counter: Number(row?.sensor_3_counter ?? 0),
+    timestamp: row?.timestamp || new Date().toISOString(),
+  };
+}
+
+export async function fetchSensorHistory(limit = 100) {
   const supabase = getSupabaseClient();
   if (!supabase) return [];
 
   const { data, error } = await supabase
-    .from('sensor_events')
+    .from('sensor_data')
     .select('*')
-    .neq('sensor_id', 'SYSTEM')
-    .order('recorded_at', { ascending: false })
+    .order('timestamp', { ascending: false })
     .limit(limit);
 
-  if (error || !data) {
-    console.error('fetchSensorHistory error:', error);
-    return [];
-  }
+  if (error || !data) { console.error('fetchSensorHistory error:', error); return []; }
   return data.map(mapDbSensorEvent);
 }
 
@@ -2395,114 +2326,67 @@ export async function fetchConfiguration() {
   const { data, error } = await supabase
     .from('configuration')
     .select('*')
-    .eq('id', 1)
-    .single();
-
-  if (error || !data) return null;
-  return data;
-}
-
-/** Step 1C: Latest TRG from trg_latest view */
-export async function fetchLatestTRG() {
-  const supabase = getSupabaseClient();
-  if (!supabase) return null;
-
-  const { data, error } = await supabase
-    .from('trg_latest')
-    .select('*')
+    .order('updated_at', { ascending: false })
+    .limit(1)
     .maybeSingle();
 
   if (error || !data) return null;
   return data;
 }
 
-export async function fetchTRGHistory(limit = 20) {
-  const supabase = getSupabaseClient();
-  if (!supabase) return [];
+/** Step 1C-E: Performance & losses from schema */
+export async function fetchLatestOOE() {
+  return getLatestProductionPerformance();
+}
+
+export async function fetchOOEHistory(limit = 20) {
 
   const { data, error } = await supabase
-    .from('trg')
-    .select('*')
-    .order('date_temps', { ascending: false })
+    .from('production_performance')
+    .select('date, actual_count, trg_percentage, trs_percentage')
+    .order('date', { ascending: false })
     .limit(limit);
 
-  return data ?? [];
+  if (!data) return [];
+  return data.map((row: any) => ({
+    date: row.date,
+    actual_count: Number(row.actual_count ?? 0),
+    trg_percentage: Number(row.trg_percentage ?? 0),
+    trs_percentage: Number(row.trs_percentage ?? 0),
+  }));
 }
 
-/** Step 1D: Latest TRS from trs_latest view */
-export async function fetchLatestTRS() {
-  const supabase = getSupabaseClient();
-  if (!supabase) return null;
-
-  const { data, error } = await supabase
-    .from('trs_latest')
-    .select('*')
-    .maybeSingle();
-
-  if (error || !data) return null;
-  return data;
+export async function fetchLatestOEE() {
+  return getLatestProductionPerformance();
 }
 
-export async function fetchTRSHistory(limit = 20) {
-  const supabase = getSupabaseClient();
-  if (!supabase) return [];
-
-  const { data, error } = await supabase
-    .from('trs')
-    .select('*')
-    .order('date_temps', { ascending: false })
-    .limit(limit);
-
-  return data ?? [];
+export async function fetchOEEHistory(limit = 20) {
+  return fetchOOEHistory(limit);
 }
 
-/** Step 1E: Losses from pertes_table and views */
 export async function fetchLossesHistory(limit = 50) {
   const supabase = getSupabaseClient();
   if (!supabase) return [];
 
   const { data, error } = await supabase
-    .from('pertes_table')
+    .from('losses')
     .select('*')
-    .order('date_temps', { ascending: false })
+    .order('created_at', { ascending: false })
     .limit(limit);
 
-  return data ?? [];
+  return (data || []).map(mapLossRow);
 }
 
 export async function fetchLossesByDay() {
-  const supabase = getSupabaseClient();
-  if (!supabase) return [];
-
-  const { data, error } = await supabase
-    .from('pertes_par_jour')
-    .select('*');
-
-  return data ?? [];
+  return getDailyLossesStats();
 }
 
 export async function fetchLossesByMachine() {
-  const supabase = getSupabaseClient();
-  if (!supabase) return [];
-
-  const { data, error } = await supabase
-    .from('pertes_par_machine')
-    .select('*');
-
-  return data ?? [];
+  return getLossesByMachineStats();
 }
 
-/** Step 1F: Production by day from production_par_jour view */
 export async function fetchProductionByDay() {
-  const supabase = getSupabaseClient();
-  if (!supabase) return [];
-
-  // Uses etat_capteur (old polling data) — only for charts, not live display
-  const { data, error } = await supabase
-    .from('production_par_jour')
-    .select('*');
-
-  return data ?? [];
+  return getDailyProductionStats();
 }
 
 /** Step 1G: Alerts from alerts table */
@@ -2544,21 +2428,238 @@ export async function fetchSensorCounters(): Promise<{
   if (!supabase) return { capteur1: 0, capteur2: 0, capteur3: 0 };
 
   const { data, error } = await supabase
-    .from('sensor_events')
-    .select('sensor_id, counter, recorded_at')
-    .in('sensor_id', ['capteur1', 'capteur2', 'capteur3'])
-    .order('recorded_at', { ascending: false })
-    .limit(6); // at most 2 per sensor (HIGH + LOW cycle)
+    .from('sensor_data')
+    .select('sensor_1_counter, sensor_2_counter, sensor_3_counter')
+    .order('timestamp', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-  if (!data) return { capteur1: 0, capteur2: 0, capteur3: 0 };
+  if (error || !data) return { capteur1: 0, capteur2: 0, capteur3: 0 };
 
-  const result = { capteur1: 0, capteur2: 0, capteur3: 0 };
-  const seen = new Set<string>();
-  for (const row of data) {
-    if (!seen.has(row.sensor_id)) {
-      seen.add(row.sensor_id);
-      result[row.sensor_id as keyof typeof result] = row.counter;
-    }
+  return {
+    capteur1: Number(data.sensor_1_counter ?? 0),
+    capteur2: Number(data.sensor_2_counter ?? 0),
+    capteur3: Number(data.sensor_3_counter ?? 0),
+  };
+}
+
+export async function getDailyReports(): Promise<DailyReport[]> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+
+  try {
+    const { data, error } = await supabase
+      .from('daily_reports')
+      .select('*')
+      .order('report_date', { ascending: false });
+
+    if (error) throw error;
+    return (data || []).map((r: any) => ({
+      id: r.id,
+      report_date: r.report_date,
+      trg_percentage: Number(r.trg_percentage),
+      trs_percentage: Number(r.trs_percentage),
+      total_losses: Number(r.total_losses),
+      file_url: r.file_url,
+      created_at: r.created_at,
+    }));
+  } catch (error) {
+    console.error('getDailyReports failed', error);
+    return [];
   }
-  return result;
+}
+
+export async function savePushToken(token: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return;
+
+  try {
+    const session = (await supabase.auth.getSession())?.data.session;
+    if (!session?.user?.id) return;
+
+    const { error } = await (supabase.from('profiles') as any)
+      .update({ push_token: token })
+      .eq('id', session.user.id);
+
+    if (error) {
+      console.error('savePushToken failed', error);
+    }
+  } catch (error) {
+    console.error('savePushToken error', error);
+  }
+}
+
+export async function clearPushToken(): Promise<void> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return;
+
+  try {
+    const session = (await supabase.auth.getSession())?.data.session;
+    if (!session?.user?.id) return;
+
+    const { error } = await (supabase.from('profiles') as any)
+      .update({ push_token: null })
+      .eq('id', session.user.id);
+
+    if (error) {
+      console.error('clearPushToken failed', error);
+    }
+  } catch (error) {
+    console.error('clearPushToken error', error);
+  }
+}
+
+export async function fetchInspectedLosses(
+  start: string,
+  end: string
+): Promise<InspectedLoss[]> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+
+  try {
+    const { data, error } = await supabase
+      .from('losses')
+      .select('*, root_cause:loss_root_causes(*)')
+      .gte('created_at', start)
+      .lt('created_at', end)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return (data || []).map((r: any) => ({
+      id: r.id,
+      machine_name: r.machine_name || '',
+      loss_count: Number(r.loss_count) || 0,
+      reason: r.reason || null,
+      loss_zone: r.loss_zone || null,
+      cost_tnd: Number(r.cost_tnd) || 0,
+      created_at: r.created_at,
+      root_cause: r.root_cause
+        ? {
+            id: r.root_cause.id,
+            loss_id: r.root_cause.loss_id,
+            cause_category: r.root_cause.cause_category,
+            cause_details: r.root_cause.cause_details || null,
+            photo_url: r.root_cause.photo_url || null,
+            operator_id: r.root_cause.operator_id,
+            created_at: r.root_cause.created_at,
+          }
+        : null,
+    }));
+  } catch (error) {
+    console.error('fetchInspectedLosses failed', error);
+    return [];
+  }
+}
+
+export async function submitInspection(params: {
+  lossId: string;
+  category: RootCauseCategory;
+  details?: string;
+  operatorId: string;
+  photoUri?: string;
+}): Promise<{ success: boolean; error?: string }> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return { success: false, error: 'Database not configured' };
+
+  try {
+    let photoUrl: string | null = null;
+
+    if (params.photoUri) {
+      const ext = params.photoUri.split('.').pop() || 'jpg';
+      const fileName = `inspection_${params.lossId}_${Date.now()}.${ext}`;
+      try {
+        const response = await fetch(params.photoUri);
+        const blob = await response.blob();
+        const uploadResult = await supabase.storage
+          .from('inspection_photos')
+          .upload(fileName, blob, { contentType: `image/${ext}` });
+
+        if (uploadResult.error) {
+          console.error('Photo upload failed', uploadResult.error);
+        } else {
+          const { data: urlData } = supabase.storage.from('inspection_photos').getPublicUrl(fileName);
+          photoUrl = urlData?.publicUrl || null;
+        }
+      } catch (uploadErr) {
+        console.error('Photo upload exception', uploadErr);
+      }
+    }
+
+    const { error: insertError } = await supabase.from('loss_root_causes').insert({
+      loss_id: params.lossId,
+      cause_category: params.category,
+      cause_details: params.details || null,
+      photo_url: photoUrl,
+      operator_id: params.operatorId,
+    });
+
+    if (insertError) throw insertError;
+
+    // Non-blocking: mark related alert as read
+    supabase
+      .from('alerts')
+      .update({ is_read: true })
+      .eq('type', 'loss')
+      .eq('card_id', params.lossId)
+      .then().catch(() => {});
+
+    return { success: true };
+  } catch (error: any) {
+    console.error('submitInspection failed', error);
+    return { success: false, error: error?.message || 'Failed to submit inspection' };
+  }
+}
+
+export async function getCurrentUserProfile(): Promise<{
+  id: string;
+  displayName: string;
+  role: string;
+} | null> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+
+  try {
+    const session = (await supabase.auth.getSession())?.data.session;
+    if (!session?.user?.id) return null;
+
+    const { data, error } = await (supabase.from('profiles') as any)
+      .select('id, display_name, role')
+      .eq('id', session.user.id)
+      .maybeSingle();
+
+    if (error) {
+      console.error('getCurrentUserProfile failed', error);
+      return null;
+    }
+    if (!data) return null;
+
+    return {
+      id: data.id,
+      displayName: data.display_name || 'User',
+      role: data.role || 'operator',
+    };
+  } catch (error) {
+    console.error('getCurrentUserProfile error', error);
+    return null;
+  }
+}
+
+export async function fetchPendingInspectionsCount(start: string, end: string): Promise<number> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return 0;
+
+  try {
+    const { count, error } = await supabase
+      .from('losses')
+      .select('id', { count: 'exact', head: true })
+      .gte('created_at', start)
+      .lt('created_at', end)
+      .is('reason', null);
+
+    if (error) throw error;
+    return count ?? 0;
+  } catch (error) {
+    console.error('fetchPendingInspectionsCount failed', error);
+    return 0;
+  }
 }

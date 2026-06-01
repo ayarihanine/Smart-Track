@@ -1,62 +1,24 @@
-export interface EtatCapteur {
-  id: string | number;
+export interface SensorData {
+  id: string;
+  nodeId: string;
+  sensor_1_status: boolean;
+  sensor_2_status: boolean;
+  sensor_3_status: boolean;
+  sensor_1_counter: number;
+  sensor_2_counter: number;
+  sensor_3_counter: number;
   timestamp: string;
-  date_temps?: string | null;
-  capteur1: number;
-  capteur2: number;
-  capteur3: number;
-}
-
-export interface SensorEvent {
-  id: string | number;
-  sensor_id: string;
-  gpio_pin: number;
-  state: string;
-  scenario: string;
-  raw_value: number;
-  created_at: string;
-}
-
-export interface PertesTable {
-  id: string | number;
-  date_temps: string;
-  machine: string;
-  capteur_from: string;
-  capteur_to: string;
-  nb_cartes_perdues: number;
-  pertes_totale: number;
-}
-
-export interface TRG {
-  id: string | number;
-  timestamp: string;
-  date_temps?: string | null;
-  cartes_attendues: number;
-  cartes_produites: number;
-  cartes_bonnes: number;
-  trg_pourcentage: number;
-}
-
-export interface TRS {
-  id: string | number;
-  timestamp: string;
-  date_temps?: string | null;
-  cartes_attendues: number;
-  cartes_produites: number;
-  cartes_bonnes: number;
-  trs_pourcentage: number;
 }
 
 export interface Configuration {
-  id: number;
-  nb_cartes_attendues: number;
-  gpio_capteur1: number;
-  gpio_capteur2: number;
-  gpio_capteur3: number;
+  id: string;
   machine_name: string;
+  expected_cards: number;
   cycle_time_seconds: number;
+  sensor_1_gpio: number;
+  sensor_2_gpio: number;
+  sensor_3_gpio: number;
   loss_threshold: number;
-  serial_port: string;
   updated_at: string;
 }
 
@@ -80,42 +42,48 @@ export interface ProductionBatch {
 }
 
 export interface Article {
-  id: string | number;
-  ref_sagem: string;
+  id: string;
+  reference: string;
   designation: string;
-  nb_montage: number;
-  prix_unitaire: number;
+  assembly_count: number;
+  unit_price: number;
 }
 
 export interface SystemNode {
-  id: string | number;
+  id: string;
   name: string;
-  ip_address?: string | null;
-  ip?: string | null;
-  status: string;
-  last_seen: string;
   type?: string | null;
+  status: string;
+  location?: string | null;
+  ip_address?: string | null;
+  mac_address?: string | null;
+  cpu_usage?: number | null;
+  memory_usage?: number | null;
+  temperature?: number | null;
+  last_seen: string;
 }
 
-export interface PerteParJour {
-  jour: string;
-  total_cartes: number;
-  total_cout: number;
-  machine: string;
+export interface LossRow {
+  id: string;
+  machine_name: string;
+  loss_count: number;
+  reason?: string;
+  loss_zone?: string;
+  cost_tnd?: number;
+  created_at: string;
 }
 
-export interface ProductionParJour {
-  jour: string;
-  machine1: number;
-  machine2: number;
-  machine3: number;
-}
-
-export interface PerteParMachine {
-  machine: string;
-  nb_incidents: number;
-  total_cartes_perdues: number;
-  cout_total: number;
+export interface ProductionPerformanceRow {
+  id: string;
+  machine_name: string;
+  target_count: number;
+  actual_count: number;
+  good_count: number;
+  loss_count: number;
+  trg_percentage: number;
+  trs_percentage: number;
+  date: string;
+  timestamp: string;
 }
 
 export interface TodayLossSummary {

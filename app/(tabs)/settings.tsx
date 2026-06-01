@@ -62,7 +62,7 @@ function SettingsLink({
 export default function SettingsTabScreen() {
   const { user, signOut } = useAuthStore();
   const { t } = useTranslation();
-  const { palette, setTheme } = useTheme();
+  const { palette, isDark, setTheme } = useTheme();
   const settings = useSettingsStore();
 
   const role = user?.role || 'operator';
@@ -80,7 +80,7 @@ export default function SettingsTabScreen() {
   };
 
   const handleThresholdChange = async (delta: number) => {
-    const nextValue = Math.max(36, Math.min(240, settings.stuckCardThresholdHours + delta));
+    const nextValue = Math.max(1, Math.min(10, settings.stuckCardThresholdHours + delta));
     await settings.setStuckCardThreshold(nextValue);
   };
 
@@ -99,7 +99,6 @@ export default function SettingsTabScreen() {
   const [gpio1, setGpio1] = useState('');
   const [gpio2, setGpio2] = useState('');
   const [gpio3, setGpio3] = useState('');
-  const [serialPort, setSerialPort] = useState('');
   const [savingConfig, setSavingConfig] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -121,39 +120,14 @@ export default function SettingsTabScreen() {
         setActiveBatchNumber(storedBatchNum);
         setActiveCardRef(storedCardRef);
         setActiveTargetQty(storedTargetQty ? parseInt(storedTargetQty, 10) : null);
-      } else {
-        // If not in storage, check database just in case
-        const supabase = getSupabaseClient();
-        if (supabase) {
-          const { data, error } = await supabase
-            .from('production_batches')
-            .select('*')
-            .eq('status', 'active')
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
-
-          if (!error && data) {
-            await AsyncStorage.setItem('current_batch_id', data.id);
-            await AsyncStorage.setItem('current_batch_number', data.batch_number);
-            await AsyncStorage.setItem('current_batch_card_reference', data.card_reference || '');
-            await AsyncStorage.setItem('current_batch_target_quantity', String(data.target_quantity || 0));
-
-            setActiveBatchId(data.id);
-            setActiveBatchNumber(data.batch_number);
-            setActiveCardRef(data.card_reference);
-            setActiveTargetQty(data.target_quantity);
-          }
-        }
       }
 
       // Load configuration
       const config = await getConfiguration();
       if (config) {
-        setGpio1(String(config.gpio_capteur1 || ''));
-        setGpio2(String(config.gpio_capteur2 || ''));
-        setGpio3(String(config.gpio_capteur3 || ''));
-        setSerialPort(config.serial_port || '');
+        setGpio1(String(config.sensor_1_gpio || ''));
+        setGpio2(String(config.sensor_2_gpio || ''));
+        setGpio3(String(config.sensor_3_gpio || ''));
       }
     } catch (err) {
       console.error('Error loading config/batch:', err);
@@ -176,48 +150,24 @@ export default function SettingsTabScreen() {
 
     try {
       setStartingBatch(true);
-      const supabase = getSupabaseClient();
-      if (!supabase) {
-        Alert.alert(t('error'), 'Supabase connection is not available');
-        return;
-      }
 
       const batchNum = 'B-' + new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14);
 
-      const { data, error } = await supabase
-        .from('production_batches')
-        .insert({
-          batch_number: batchNum,
-          card_reference: trimmedCardReference,
-          target_quantity: qty,
-          status: 'active',
-          start_time: new Date().toISOString(),
-          created_by: user?.id,
-        })
-        .select()
-        .single();
+      // Store batch in AsyncStorage only (production_batches table does not exist)
+      await AsyncStorage.setItem('current_batch_id', batchNum);
+      await AsyncStorage.setItem('current_batch_number', batchNum);
+      await AsyncStorage.setItem('current_batch_card_reference', trimmedCardReference);
+      await AsyncStorage.setItem('current_batch_target_quantity', String(qty));
 
-      if (error) throw error;
+      setActiveBatchId(batchNum);
+      setActiveBatchNumber(batchNum);
+      setActiveCardRef(trimmedCardReference);
+      setActiveTargetQty(qty);
 
-      if (data) {
-        // Set in AsyncStorage
-        await AsyncStorage.setItem('current_batch_id', data.id);
-        await AsyncStorage.setItem('current_batch_number', data.batch_number);
-        await AsyncStorage.setItem('current_batch_card_reference', data.card_reference || '');
-        await AsyncStorage.setItem('current_batch_target_quantity', String(data.target_quantity || 0));
+      setCardReference('');
+      setTargetQuantity('');
 
-        // Set in State
-        setActiveBatchId(data.id);
-        setActiveBatchNumber(data.batch_number);
-        setActiveCardRef(data.card_reference);
-        setActiveTargetQty(data.target_quantity);
-
-        // Reset Inputs
-        setCardReference('');
-        setTargetQuantity('');
-
-        Alert.alert(t('success'), `Production started for batch ${data.batch_number}`);
-      }
+      Alert.alert(t('success'), `Production started for batch ${batchNum}`);
     } catch (err: any) {
       console.error('Error starting batch:', err);
       Alert.alert(t('error'), err.message || 'Failed to start production batch');
@@ -239,18 +189,6 @@ export default function SettingsTabScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              const supabase = getSupabaseClient();
-              if (supabase) {
-                await supabase
-                  .from('production_batches')
-                  .update({
-                    status: 'completed',
-                    end_time: new Date().toISOString()
-                  })
-                  .eq('id', activeBatchId);
-              }
-
-              // Clear local cache
               await AsyncStorage.removeItem('current_batch_id');
               await AsyncStorage.removeItem('current_batch_number');
               await AsyncStorage.removeItem('current_batch_card_reference');
@@ -285,10 +223,9 @@ export default function SettingsTabScreen() {
     try {
       setSavingConfig(true);
       const updated = await updateConfiguration({
-        gpio_capteur1: g1,
-        gpio_capteur2: g2,
-        gpio_capteur3: g3,
-        serial_port: serialPort,
+        sensor_1_gpio: g1,
+        sensor_2_gpio: g2,
+        sensor_3_gpio: g3,
       } as any);
 
       if (updated) {
@@ -330,6 +267,20 @@ export default function SettingsTabScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
+      {/* ── Header ── */}
+      <View style={[styles.pageHeader, { backgroundColor: palette.background, borderBottomColor: palette.border }]}>
+        <TouchableOpacity
+          style={[styles.backBtn, { backgroundColor: isDark ? '#1e293b' : '#F3F4F6' }]}
+          onPress={() => router.back()}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Ionicons name="arrow-back" size={20} color={palette.text} />
+        </TouchableOpacity>
+        <View style={{ flex: 1, marginLeft: 12 }}>
+          <Text style={[styles.pageHeaderTitle, { color: palette.text }]}>{t('settings')}</Text>
+          <Text style={[styles.pageHeaderSub, { color: palette.textSecondary }]}>System & production config</Text>
+        </View>
+      </View>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         {/* Profile Card */}
         <View style={[styles.profileCard, { backgroundColor: palette.background, borderColor: palette.border }]}> 
@@ -416,13 +367,16 @@ export default function SettingsTabScreen() {
             {(role === 'supervisor' || role === 'admin') && (
               <>
                 <View style={[styles.divider, { backgroundColor: palette.border }]} />
-                <View style={styles.inlineSettingRow}>
-                  <Text style={[styles.inlineSettingLabel, { color: palette.text }]}>Stuck card threshold</Text>
-                  <View style={[styles.counterRow, { backgroundColor: palette.backgroundSecondary }]}> 
+                <View style={[styles.inlineSettingRow]}>
+                  <View>
+                    <Text style={[styles.inlineSettingLabel, { color: palette.text }]}>Stuck card threshold</Text>
+                    <Text style={{ fontSize: 11, color: palette.textTertiary, marginTop: 1 }}>Max 10 min — alerts trigger after this duration</Text>
+                  </View>
+                  <View style={[styles.counterRow, { backgroundColor: palette.backgroundSecondary }]}>
                     <TouchableOpacity style={[styles.counterBtn, { backgroundColor: palette.background }]} onPress={() => handleThresholdChange(-1)}>
                       <Ionicons name="remove" size={16} color={palette.text} />
                     </TouchableOpacity>
-                    <Text style={[styles.counterText, { color: palette.text }]}>{settings.stuckCardThresholdHours}h</Text>
+                    <Text style={[styles.counterText, { color: palette.text }]}>{settings.stuckCardThresholdHours} min</Text>
                     <TouchableOpacity style={[styles.counterBtn, { backgroundColor: palette.background }]} onPress={() => handleThresholdChange(1)}>
                       <Ionicons name="add" size={16} color={palette.text} />
                     </TouchableOpacity>
@@ -566,17 +520,6 @@ export default function SettingsTabScreen() {
               </View>
             </View>
 
-            <View style={styles.fieldWrap}>
-              <Text style={[styles.fieldLabel, { color: palette.textSecondary }]}>Serial Port</Text>
-              <TextInput
-                value={serialPort}
-                onChangeText={setSerialPort}
-                placeholder="/dev/ttyUSB0 or COM3"
-                placeholderTextColor={palette.textTertiary}
-                style={[styles.input, { backgroundColor: palette.backgroundSecondary, borderColor: palette.border, color: palette.text }]}
-              />
-            </View>
-
             <TouchableOpacity
               activeOpacity={0.8}
               onPress={handleSaveConfiguration}
@@ -598,8 +541,8 @@ export default function SettingsTabScreen() {
         {/* Existing Navigation Links */}
         <View style={styles.section}>
           <SectionTitle title={t('productionSection')} palette={palette} />
-          <SettingsLink icon="stats-chart" label={t('statisticsTab')} onPress={() => router.push('/(tabs)/statistiques')} palette={palette} />
-          <SettingsLink icon="warning" label={t('lossesTab')} onPress={() => router.push('/(tabs)/pertes')} palette={palette} />
+          <SettingsLink icon="stats-chart" label={t('statisticsTab')} onPress={() => router.push('/(tabs)/statistics')} palette={palette} />
+          <SettingsLink icon="warning" label={t('lossesTab')} onPress={() => router.push('/(tabs)/losses')} palette={palette} />
           <SettingsLink icon="hardware-chip" label={t('systemStatusTitle')} onPress={() => router.push('/system-status')} palette={palette} />
         </View>
 
@@ -621,9 +564,18 @@ export default function SettingsTabScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
+  container: { flex: 1 },
+  pageHeader: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: spacing.md, paddingVertical: spacing.md,
+    borderBottomWidth: 1,
   },
+  backBtn: {
+    width: 38, height: 38, borderRadius: 11,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  pageHeaderTitle: { ...typography.h4, fontWeight: '800' },
+  pageHeaderSub: { ...typography.tiny, marginTop: 2 },
   loader: {
     flex: 1,
     alignItems: 'center',

@@ -6,7 +6,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { router, useFocusEffect } from 'expo-router';
+import { router, useFocusEffect, useRouter } from 'expo-router';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
 import { getCards, deleteCard } from '@/lib/api';
 import { ElectronicCard, FilterOptions } from '@/types';
@@ -242,7 +242,14 @@ export default function HistoryScreen() {
     <SafeAreaView style={[styles.container, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
       {/* Header */}
       <View style={[styles.header, { backgroundColor: palette.background, borderBottomColor: palette.border }]}>
-        <View>
+        <TouchableOpacity
+          style={[styles.backBtn, { backgroundColor: isDark ? '#1e293b' : '#F3F4F6' }]}
+          onPress={() => router.back()}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Ionicons name="arrow-back" size={20} color={palette.text} />
+        </TouchableOpacity>
+        <View style={{ flex: 1, marginLeft: 12 }}>
           <Text style={[styles.headerTitle, { color: palette.text }]}>{t('recentCards' as any)}</Text>
           <Text style={[styles.headerSubtitle, { color: palette.textTertiary }]}>{cards.length} {t('totalUnits' as any) || 'units tracked'}</Text>
         </View>
@@ -436,9 +443,13 @@ export default function HistoryScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: spacing.lg, paddingVertical: spacing.lg,
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: spacing.md, paddingVertical: spacing.md,
     borderBottomWidth: 1,
+  },
+  backBtn: {
+    width: 38, height: 38, borderRadius: 11,
+    alignItems: 'center', justifyContent: 'center',
   },
   headerTitle: { ...typography.h3, fontSize: 22 },
   headerSubtitle: { ...typography.tiny, marginTop: 2, fontWeight: '600' },

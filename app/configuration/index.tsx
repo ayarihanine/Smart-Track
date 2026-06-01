@@ -18,23 +18,27 @@ import { router } from 'expo-router';
 import { borderRadius, shadows, spacing, typography } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
 import { useTranslation } from '@/hooks/useTranslation';
-import { useAuthStore } from '@/store/authStore';
-import { fetchConfiguration } from '@/lib/api';
-import { getSupabaseClient } from '@/lib/supabase';
-import { Configuration } from '@/types/production';
+import { fetchConfiguration, updateConfiguration } from '@/lib/api';
+import { useRoleGuard } from '@/hooks/useRoleGuard';
 
-type ConfigurationForm = Pick<
-  Configuration,
-  'nb_cartes_attendues' | 'machine_name' | 'cycle_time_seconds'
-> & {
+type ConfigurationForm = {
+  expected_cards: number;
+  machine_name: string;
+  cycle_time_seconds: number;
   loss_threshold: number;
+  sensor_1_gpio: number;
+  sensor_2_gpio: number;
+  sensor_3_gpio: number;
 };
 
 const defaultForm: ConfigurationForm = {
-  nb_cartes_attendues: 0,
+  expected_cards: 0,
   machine_name: '',
   cycle_time_seconds: 0,
   loss_threshold: 0,
+  sensor_1_gpio: 0,
+  sensor_2_gpio: 0,
+  sensor_3_gpio: 0,
 };
 
 function AccessDenied({ t, palette }: { t: (key: any) => string; palette: any }) {
@@ -87,14 +91,12 @@ function ConfigInput({
 }
 
 export default function ConfigurationScreen() {
-  const { user } = useAuthStore();
   const { t } = useTranslation();
   const { palette } = useTheme();
+  const { isAuthorized } = useRoleGuard(['admin', 'supervisor']);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<ConfigurationForm>(defaultForm);
-
-  const isAuthorized = user?.role === 'admin' || user?.role === 'supervisor';
 
   useEffect(() => {
     let mounted = true;
@@ -105,10 +107,13 @@ export default function ConfigurationScreen() {
 
       if (mounted && configuration) {
         setForm({
-          nb_cartes_attendues: configuration.nb_cartes_attendues,
+          expected_cards: configuration.expected_cards,
           machine_name: configuration.machine_name,
           cycle_time_seconds: configuration.cycle_time_seconds,
           loss_threshold: configuration.loss_threshold,
+          sensor_1_gpio: configuration.sensor_1_gpio || 0,
+          sensor_2_gpio: configuration.sensor_2_gpio || 0,
+          sensor_3_gpio: configuration.sensor_3_gpio || 0,
         });
       }
 
@@ -130,23 +135,18 @@ export default function ConfigurationScreen() {
 
   const saveConfiguration = async () => {
     setSaving(true);
-
-    const supabase = getSupabaseClient();
-    const { error } = supabase
-      ? await supabase
-          .from('configuration')
-          .update({ ...form, updated_at: new Date().toISOString() })
-          .eq('id', 1)
-      : { error: new Error('Supabase is not configured') };
-
-    setSaving(false);
-
-    if (!error) {
-      Alert.alert(t('success'), t('configurationSaved'));
-      return;
+    try {
+      const updated = await updateConfiguration(form);
+      if (updated) {
+        Alert.alert(t('success') || 'Success', t('configurationSaved') || 'Configuration saved successfully!');
+      } else {
+        Alert.alert(t('error') || 'Error', t('configurationSaveError') || 'Failed to save configuration.');
+      }
+    } catch (e: any) {
+      Alert.alert(t('error') || 'Error', e.message || 'An error occurred.');
+    } finally {
+      setSaving(false);
     }
-
-    Alert.alert(t('error'), t('configurationSaveError'));
   };
 
   if (loading) {
@@ -167,44 +167,76 @@ export default function ConfigurationScreen() {
           <TouchableOpacity activeOpacity={0.8} onPress={() => router.back()} style={styles.headerBack}>
             <Ionicons name="arrow-back" size={22} color={palette.text} />
           </TouchableOpacity>
-          <Text style={[styles.headerTitle, { color: palette.text }]}>{t('configurationTitle')}</Text>
+          <Text style={[styles.headerTitle, { color: palette.text }]}>{t('configurationTitle') || 'Configuration'}</Text>
           <View style={styles.headerSpacer} />
         </View>
 
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
           <View style={[styles.sectionCard, { backgroundColor: palette.background, borderColor: palette.border }]}>
-            <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('productionSettingsSection')}</Text>
+            <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('productionSettingsSection') || 'Production settings'}</Text>
 
             <ConfigInput
-              label="Cards expected per batch"
-              value={String(form.nb_cartes_attendues || '')}
-              onChangeText={(value) => setForm((current) => ({ ...current, nb_cartes_attendues: Number(value.replace(/[^0-9]/g, '')) || 0 }))}
-              placeholder={t('expectedCardsPlaceholder')}
-              keyboardType="number-pad"
-              palette={palette}
-            />
-
-            <ConfigInput
-              label="Machine name"
+              label="Machine Name"
               value={form.machine_name}
               onChangeText={(value) => setForm((current) => ({ ...current, machine_name: value }))}
-              placeholder={t('machineNamePlaceholder')}
+              placeholder="e.g. NPM-DX-1"
               palette={palette}
             />
 
             <ConfigInput
-              label="Cycle time (seconds)"
-              value={String(form.cycle_time_seconds || '')}
-              onChangeText={(value) => setForm((current) => ({ ...current, cycle_time_seconds: Number(value.replace(/[^0-9]/g, '')) || 0 }))}
-              placeholder={t('cycleTimePlaceholder')}
+              label="Cards Expected Per Batch"
+              value={String(form.expected_cards || '')}
+              onChangeText={(value) => setForm((current) => ({ ...current, expected_cards: Number(value.replace(/[^0-9]/g, '')) || 0 }))}
+              placeholder="e.g. 1000"
               keyboardType="number-pad"
               palette={palette}
             />
+
             <ConfigInput
-              label="Loss alert threshold"
+              label="Cycle Time (seconds)"
+              value={String(form.cycle_time_seconds || '')}
+              onChangeText={(value) => setForm((current) => ({ ...current, cycle_time_seconds: Number(value.replace(/[^0-9]/g, '')) || 0 }))}
+              placeholder="e.g. 45"
+              keyboardType="number-pad"
+              palette={palette}
+            />
+
+            <ConfigInput
+              label="Loss Alert Threshold"
               value={String(form.loss_threshold || '')}
               onChangeText={(value) => setForm((current) => ({ ...current, loss_threshold: Number(value.replace(/[^0-9]/g, '')) || 0 }))}
               placeholder="1"
+              keyboardType="number-pad"
+              palette={palette}
+            />
+          </View>
+
+          <View style={[styles.sectionCard, { backgroundColor: palette.background, borderColor: palette.border, marginTop: spacing.md }]}>
+            <Text style={[styles.sectionTitle, { color: palette.text }]}>GPIO Sensor Configurations</Text>
+
+            <ConfigInput
+              label="Sensor 1 GPIO Pin (Entry)"
+              value={String(form.sensor_1_gpio || '')}
+              onChangeText={(value) => setForm((current) => ({ ...current, sensor_1_gpio: Number(value.replace(/[^0-9]/g, '')) || 0 }))}
+              placeholder="e.g. 17"
+              keyboardType="number-pad"
+              palette={palette}
+            />
+
+            <ConfigInput
+              label="Sensor 2 GPIO Pin (Middle)"
+              value={String(form.sensor_2_gpio || '')}
+              onChangeText={(value) => setForm((current) => ({ ...current, sensor_2_gpio: Number(value.replace(/[^0-9]/g, '')) || 0 }))}
+              placeholder="e.g. 26"
+              keyboardType="number-pad"
+              palette={palette}
+            />
+
+            <ConfigInput
+              label="Sensor 3 GPIO Pin (Exit)"
+              value={String(form.sensor_3_gpio || '')}
+              onChangeText={(value) => setForm((current) => ({ ...current, sensor_3_gpio: Number(value.replace(/[^0-9]/g, '')) || 0 }))}
+              placeholder="e.g. 16"
               keyboardType="number-pad"
               palette={palette}
             />
@@ -214,9 +246,9 @@ export default function ConfigurationScreen() {
             activeOpacity={0.85}
             onPress={saveConfiguration}
             disabled={saving}
-            style={[styles.primaryButton, { backgroundColor: palette.primary, opacity: saving ? 0.8 : 1 }]}
+            style={[styles.primaryButton, { backgroundColor: palette.primary, opacity: saving ? 0.8 : 1, marginTop: spacing.md }]}
           >
-            {saving ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>{t('saveConfiguration')}</Text>}
+            {saving ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>{t('saveConfiguration') || 'Save Configuration'}</Text>}
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>

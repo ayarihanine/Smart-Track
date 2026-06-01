@@ -29,7 +29,7 @@ function ActivityItem({ item, palette }: { item: ScanEvent; palette: any }) {
                     <Text style={[styles.timestamp, { color: palette.textTertiary }]}>{dateStr}, {timeStr}</Text>
                 </View>
                 <Text style={[styles.details, { color: palette.textSecondary }]}>
-                    {t('movedTo')} <Text style={{ fontWeight: '700', color: palette.text }}>{item.stage || t('nextStage')}</Text>
+                    {t('movedTo')} <Text style={{ fontWeight: '700', color: palette.text }}>{item.stageName || t('nextStage')}</Text>
                 </Text>
                 <View style={styles.metaRow}>
                     <View style={styles.metaItem}>
@@ -75,7 +75,7 @@ export default function ActivityFeedScreen() {
             .channel('activity-feed-live')
             .on(
                 'postgres_changes',
-                { event: '*', schema: 'public', table: 'scan_events' },
+                { event: '*', schema: 'public', table: 'sensor_events' },
                 () => {
                     fetchEvents();
                 }

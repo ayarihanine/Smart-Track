@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet, ActivityIndicator, TouchableOpacity, TextInput, Alert
+  View, Text, ScrollView, StyleSheet, ActivityIndicator, TouchableOpacity, TextInput
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -8,7 +8,7 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { useMutation } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
-import { createIssue, getCard, updateCardQuality, reassignCard, getScanEvents } from '@/lib/api';
+import { getCard, reassignCard, getScanEvents } from '@/lib/api';
 import { ElectronicCard, ScanEvent } from '@/types';
 import { useAuthStore } from '@/store/authStore';
 import { useTheme } from '@/components/ThemeProvider';
@@ -37,14 +37,7 @@ export default function CardDetailScreen() {
   const { palette } = useTheme();
   const { t } = useTranslation();
   const user = useAuthStore(s => s.user);
-  const isSupervisor =
-    (user as any)?.user_metadata?.role === 'supervisor' ||
-    (user as any)?.user_metadata?.role === 'admin';
-
-  // Quality state
-  const [isEditingQuality, setIsEditingQuality] = React.useState(false);
-  const [qualityIssues, setQualityIssues] = React.useState('');
-  const [missingItems, setMissingItems] = React.useState('');
+  const isSupervisor = user?.role === 'supervisor' || user?.role === 'admin';
 
   // Reassignment state
   const [isReassigning, setIsReassigning] = React.useState(false);
@@ -76,7 +69,6 @@ export default function CardDetailScreen() {
     fetchCardDetails();
   }, [fetchCardDetails]);
 
-  // Realtime subscription — filter on id column (not cardId)
   React.useEffect(() => {
     if (!id) return;
     const supabase = getSupabaseClient();
@@ -84,8 +76,8 @@ export default function CardDetailScreen() {
 
     const ch = supabase
       .channel(`card-detail-${id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'electronic_cards', filter: `id=eq.${id}` }, fetchCardDetails)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'scan_events', filter: `id=eq.${id}` }, fetchCardDetails)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'electronic_cards' }, fetchCardDetails)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sensor_events' }, fetchCardDetails)
       .subscribe();
 
     return () => { supabase.removeChannel(ch); };
@@ -100,22 +92,6 @@ export default function CardDetailScreen() {
     return activeMs / (1000 * 60 * 60) >= 36;
   }, [card]);
 
-  // Sync quality fields when card loads
-  React.useEffect(() => {
-    if (card) {
-      setQualityIssues(card.qualityIssues || '');
-      setMissingItems(card.missingItems || '');
-    }
-  }, [card]);
-
-  const updateQualityMutation = useMutation({
-    mutationFn: async () => {
-      if (!card) throw new Error('No card');
-      return updateCardQuality(card.cardId, qualityIssues, missingItems);
-    },
-    onSuccess: () => { fetchCardDetails(); setIsEditingQuality(false); },
-  });
-
   const reassignMutation = useMutation({
     mutationFn: async () => {
       if (!card || !selectedStage) throw new Error('Missing fields');
@@ -126,28 +102,6 @@ export default function CardDetailScreen() {
       setIsReassigning(false);
       setReassignNote('');
       setNewLocation('');
-    },
-  });
-
-  const createIssueMutation = useMutation({
-    mutationFn: async () => {
-      if (!card) throw new Error('No card');
-      await updateCardQuality(card.cardId, qualityIssues, missingItems);
-      const issueText = [qualityIssues.trim(), missingItems.trim()].filter(Boolean).join(' | ');
-      return createIssue({
-        title: `Quality issue - ${card.cardId}`,
-        description: issueText || `Escalated from card ${card.cardId}`,
-        priority: 'high',
-        cardId: card.cardId,
-        reportedBy: user?.id,
-        status: 'open',
-      } as any);
-    },
-    onSuccess: () => {
-      Alert.alert('Success', 'Issue created from card quality section.');
-    },
-    onError: (err: any) => {
-      Alert.alert('Error', err?.message || 'Failed to create issue.');
     },
   });
 
@@ -177,6 +131,14 @@ export default function CardDetailScreen() {
   const statusColor = STATUS_COLOR[card.status] || '#6B7280';
   const totalInserted = card.componentInsertions?.reduce((a, c) => a + (c.insertedQuantity || 0), 0) ?? 0;
   const totalRequired = card.loadingPlan?.reduce((a, p) => a + (p.requiredQuantity || 0), 0) ?? 0;
+  const totalMinutes = card.totalTimeMinutes ?? (card.updatedAt && card.createdAt
+    ? Math.floor((new Date(card.updatedAt).getTime() - new Date(card.createdAt).getTime()) / 60000)
+    : 0);
+  const totalHours = Math.floor(totalMinutes / 60);
+  const remainingMins = totalMinutes % 60;
+  const totalTimeStr = totalMinutes > 0
+    ? (totalHours > 0 ? `${totalHours}h ${remainingMins}min` : `${totalMinutes} min`)
+    : '—';
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: palette.backgroundSecondary }]} edges={['top', 'bottom']}>
@@ -249,7 +211,7 @@ export default function CardDetailScreen() {
             <View style={styles.statItem}>
               <Ionicons name="timer-outline" size={14} color="rgba(255,255,255,0.6)" />
               <Text style={styles.statLabel}>Total Time</Text>
-              <Text style={styles.statValue}>{card.totalTimeMinutes ? `${card.totalTimeMinutes} min` : '—'}</Text>
+              <Text style={styles.statValue}>{totalTimeStr}</Text>
             </View>
             <View style={styles.statDivider} />
             <View style={styles.statItem}>
@@ -263,10 +225,15 @@ export default function CardDetailScreen() {
         {/* ── Production History ── */}
         <View style={[styles.section, { backgroundColor: palette.background, borderColor: palette.border }]}>
           <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('productionHistory')}</Text>
-            <View style={[styles.badge, { backgroundColor: palette.backgroundSecondary }]}>
-              <Text style={[styles.badgeText, { color: palette.textSecondary }]}>
-                {scanEvents.length} events
+            <View style={styles.sectionTitleRow}>
+              <Ionicons name="time-outline" size={16} color={palette.primary} />
+              <Text style={[styles.sectionTitle, { color: palette.text, marginBottom: 0 }]}>
+                {t('productionHistory')}
+              </Text>
+            </View>
+            <View style={[styles.badge, { backgroundColor: palette.primary + '20' }]}>
+              <Text style={[styles.badgeText, { color: palette.primary }]}>
+                {scanEvents.length} {scanEvents.length === 1 ? 'scan' : 'scans'}
               </Text>
             </View>
           </View>
@@ -279,128 +246,63 @@ export default function CardDetailScreen() {
               </Text>
             </View>
           ) : (
-            scanEvents.map((event, i) => (
-              <View key={event.id} style={styles.timelineRow}>
-                {/* Line + Dot */}
-                <View style={styles.timelineLeft}>
-                  <View style={[
-                    styles.timelineDot,
-                    { backgroundColor: i === 0 ? colors.primary : palette.border }
-                  ]} />
-                  {i < scanEvents.length - 1 && (
-                    <View style={[styles.timelineLine, { backgroundColor: palette.border }]} />
-                  )}
-                </View>
-                {/* Content */}
-                <View style={[
-                  styles.timelineCard,
-                  { backgroundColor: palette.backgroundSecondary, borderColor: i === 0 ? colors.primary : palette.border },
-                  i === 0 && styles.timelineCardActive,
-                ]}>
-                  <View style={styles.timelineCardHeader}>
-                    <Text style={[styles.timelineStage, { color: palette.text }]}>
-                      {event.stage || '—'}
-                    </Text>
-                    <Text style={[styles.timelineTime, { color: palette.textTertiary }]}>
-                      {formatDateTime(event.timestamp)}
-                    </Text>
+            <View style={styles.timelineContainer}>
+              {scanEvents.map((event, i) => (
+                <View key={event.id} style={styles.timelineRow}>
+                  {/* Line + Dot */}
+                  <View style={styles.timelineLeft}>
+                    <View style={[
+                      styles.timelineDot,
+                      { backgroundColor: i === 0 ? palette.primary : palette.border }
+                    ]} />
+                    {i < scanEvents.length - 1 && (
+                      <View style={[styles.timelineLine, { backgroundColor: palette.border }]} />
+                    )}
                   </View>
-                  {(event.location || event.scannedBy) && (
-                    <Text style={[styles.timelineMeta, { color: palette.textSecondary }]}>
-                      {[event.location, event.scannedBy].filter(Boolean).join(' · ')}
-                    </Text>
-                  )}
-                  {event.notes ? (
-                    <Text style={[styles.timelineNotes, { color: palette.textTertiary }]}> 
-                      {`"${event.notes}"`}
-                    </Text>
-                  ) : null}
+                  {/* Content */}
+                  <View style={[
+                    styles.timelineCard,
+                    { backgroundColor: palette.backgroundSecondary, borderColor: i === 0 ? palette.primary : palette.border },
+                    i === 0 && styles.timelineCardActive,
+                  ]}>
+                    <View style={styles.timelineCardHeader}>
+                      <Text style={[styles.timelineStage, { color: palette.text }]}>
+                        {event.stageName || event.eventType || '—'}
+                      </Text>
+                      <Text style={[styles.timelineTime, { color: palette.textTertiary }]}>
+                        {formatDateTime(event.timestamp)}
+                      </Text>
+                    </View>
+                    {(event.location || event.scannedBy) && (
+                      <View style={styles.timelineMetaRow}>
+                        {event.location && (
+                          <View style={styles.metaTag}>
+                            <Ionicons name="pin" size={11} color={palette.textTertiary} />
+                            <Text style={[styles.metaTagText, { color: palette.textSecondary }]}>
+                              {event.location}
+                            </Text>
+                          </View>
+                        )}
+                        {event.scannedBy && (
+                          <View style={styles.metaTag}>
+                            <Ionicons name="person" size={11} color={palette.textTertiary} />
+                            <Text style={[styles.metaTagText, { color: palette.textSecondary }]}>
+                              {event.scannedBy}
+                            </Text>
+                          </View>
+                        )}
+                      </View>
+                    )}
+                    {event.notes ? (
+                      <Text style={[styles.timelineNotes, { color: palette.textTertiary }]}>
+                        {`"${event.notes}"`}
+                      </Text>
+                    ) : null}
+                  </View>
                 </View>
-              </View>
-            ))
-          )}
-        </View>
-
-        {/* ── Quality & Issues ── */}
-        <View style={[styles.section, { backgroundColor: palette.background, borderColor: palette.border }]}> 
-          <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('qualityAndIssues')}</Text>
-            <View style={[styles.livePill, { backgroundColor: palette.backgroundSecondary, borderColor: palette.border }]}> 
-              <Text style={[styles.livePillText, { color: palette.textSecondary }]}>Quality Log</Text>
+              ))}
             </View>
-          </View>
-
-          {/* Quality Issues */}
-          <View style={styles.fieldGroup}>
-            <Text style={[styles.fieldLabel, { color: palette.textSecondary }]}>{t('qualityIssues')}</Text>
-            {isEditingQuality ? (
-              <View style={[styles.inputBox, { borderColor: palette.border, backgroundColor: palette.backgroundSecondary }]}>
-                <TextInput
-                  style={[styles.inputText, { color: palette.text }]}
-                  multiline
-                  numberOfLines={3}
-                  placeholder={t('qualityDefectsPlaceholder')}
-                  placeholderTextColor={palette.textTertiary}
-                  value={qualityIssues}
-                  onChangeText={setQualityIssues}
-                  textAlignVertical="top"
-                />
-              </View>
-            ) : (
-              <Text style={[styles.fieldValue, { color: card.qualityIssues ? palette.text : palette.textTertiary }]}>
-                {card.qualityIssues || t('noQualityReported')}
-              </Text>
-            )}
-          </View>
-
-          {/* Missing Items */}
-          <View style={[styles.fieldGroup, { marginTop: spacing.md }]}>
-            <Text style={[styles.fieldLabel, { color: palette.textSecondary }]}>{t('missingItems')}</Text>
-            {isEditingQuality ? (
-              <View style={[styles.inputBox, { borderColor: palette.border, backgroundColor: palette.backgroundSecondary }]}>
-                <TextInput
-                  style={[styles.inputText, { color: palette.text }]}
-                  multiline
-                  numberOfLines={3}
-                  placeholder={t('missingComponentsPlaceholder')}
-                  placeholderTextColor={palette.textTertiary}
-                  value={missingItems}
-                  onChangeText={setMissingItems}
-                  textAlignVertical="top"
-                />
-              </View>
-            ) : (
-              <Text style={[styles.fieldValue, { color: card.missingItems ? palette.text : palette.textTertiary }]}>
-                {card.missingItems || t('noMissingItems')}
-              </Text>
-            )}
-          </View>
-
-          <View style={[styles.qualityActionsRow, { borderTopColor: palette.border }]}> 
-            <TouchableOpacity
-              style={[styles.qualityActionBtn, { borderColor: palette.border, backgroundColor: palette.backgroundSecondary }]}
-              onPress={() => {
-                if (isEditingQuality) {
-                  updateQualityMutation.mutate();
-                } else {
-                  setIsEditingQuality(true);
-                }
-              }}
-            >
-              <Ionicons name={isEditingQuality ? 'save-outline' : 'create-outline'} size={16} color={palette.textSecondary} />
-              <Text style={[styles.qualityActionText, { color: palette.textSecondary }]}>
-                {isEditingQuality ? (updateQualityMutation.isPending ? 'Saving...' : 'Save Notes') : 'Edit Notes'}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.qualityActionBtnPrimary, { opacity: createIssueMutation.isPending || (!qualityIssues.trim() && !missingItems.trim()) ? 0.7 : 1 }]}
-              onPress={() => createIssueMutation.mutate()}
-              disabled={createIssueMutation.isPending || (!qualityIssues.trim() && !missingItems.trim())}
-            >
-              <Ionicons name="alert-circle-outline" size={16} color="#FFFFFF" />
-              <Text style={styles.qualityActionPrimaryText}>{createIssueMutation.isPending ? 'Escalating...' : 'Escalate Issue'}</Text>
-            </TouchableOpacity>
-          </View>
+          )}
         </View>
 
         {/* ── Supervisor: Reassign Stage ── */}
@@ -607,64 +509,32 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.full,
   },
   badgeText: { ...typography.tiny, fontWeight: '700' },
-  livePill: {
-    borderWidth: 1,
-    borderRadius: borderRadius.full,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 5,
-  },
-  livePillText: { ...typography.tiny, fontWeight: '700', textTransform: 'uppercase' },
-  qualityActionsRow: {
-    marginTop: spacing.md,
-    borderTopWidth: 1,
-    paddingTop: spacing.md,
-    flexDirection: 'row',
-    gap: spacing.sm,
-  },
-  qualityActionBtn: {
-    flex: 1,
-    height: 42,
-    borderRadius: borderRadius.lg,
-    borderWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-  },
-  qualityActionBtnPrimary: {
-    flex: 1,
-    height: 42,
-    borderRadius: borderRadius.lg,
-    backgroundColor: '#0F766E',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    ...shadows.xs,
-  },
-  qualityActionText: { ...typography.smallBold },
-  qualityActionPrimaryText: { ...typography.smallBold, color: '#FFFFFF' },
-
   // Timeline
   emptyState: { alignItems: 'center', paddingVertical: spacing.xl, gap: spacing.sm },
   emptyStateText: { ...typography.body },
+  timelineContainer: { gap: spacing.sm },
   timelineRow: { flexDirection: 'row', gap: spacing.md, marginBottom: 4 },
   timelineLeft: { alignItems: 'center', width: 14, paddingTop: 4 },
   timelineDot: { width: 12, height: 12, borderRadius: 6, zIndex: 1 },
   timelineLine: { width: 2, flex: 1, marginTop: 4, minHeight: 20 },
   timelineCard: {
     flex: 1, borderRadius: borderRadius.lg, padding: spacing.md,
-    gap: 4, marginBottom: spacing.sm, borderWidth: 1.5,
+    gap: 6, marginBottom: spacing.sm, borderWidth: 1.5,
   },
-  timelineCardActive: { borderColor: colors.primary },
+  timelineCardActive: { borderWidth: 2 },
   timelineCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  timelineStage: { ...typography.bodyBold, fontSize: 14 },
-  timelineTime: { ...typography.tiny },
-  timelineMeta: { ...typography.small, marginTop: 2 },
+  timelineStage: { ...typography.bodyBold, fontSize: 14, flex: 1 },
+  timelineTime: { ...typography.tiny, marginLeft: spacing.sm },
+  timelineMetaRow: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' },
+  metaTag: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 8, paddingVertical: 4,
+    borderRadius: borderRadius.full, backgroundColor: 'rgba(0,0,0,0.05)',
+  },
+  metaTagText: { ...typography.tiny, fontWeight: '500' },
   timelineNotes: { ...typography.small, fontStyle: 'italic', marginTop: 4 },
 
   // Fields
-  fieldGroup: { gap: 4 },
   fieldLabel: { ...typography.smallBold },
   fieldValue: { ...typography.body, marginTop: 2 },
   inputBox: { borderWidth: 1, borderRadius: borderRadius.md, padding: spacing.sm, marginTop: 4 },

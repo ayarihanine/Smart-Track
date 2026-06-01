@@ -40,14 +40,12 @@ function SensorCard({
   palette,
 }: {
   label: string;
-  slot: { state: string; lastSeen: string };
+  slot: { status: boolean; lastSeen: string };
   counter: number;
   palette: any;
 }) {
-  const state = slot.state === 'HIGH' ? 'HIGH' : slot.state === 'LOW' ? 'LOW' : 'UNKNOWN';
-  const stateColor =
-    state === 'HIGH' ? '#10B981' : state === 'LOW' ? '#EF4444' : '#9CA3AF';
-  const stateLabel = state === 'UNKNOWN' ? '---' : state;
+  const stateColor = slot.status ? '#10B981' : '#EF4444';
+  const stateLabel = slot.status ? 'HIGH' : 'LOW';
 
   return (
     <View style={[styles.sensorCard, { backgroundColor: palette.background, borderColor: palette.border }]}>
@@ -248,8 +246,8 @@ export default function ProductionDashboard() {
         </View>
 
         <View style={styles.gaugeRow}>
-          <GaugeRing label="TRG" percent={trgPercent} showDash={showTrDash} palette={palette} />
-          <GaugeRing label="TRS" percent={trsPercent} showDash={showTrDash} palette={palette} />
+          <GaugeRing label="OOE" percent={trgPercent} showDash={showTrDash} palette={palette} />
+          <GaugeRing label="OEE" percent={trsPercent} showDash={showTrDash} palette={palette} />
         </View>
 
         <View style={[styles.lossCard, { backgroundColor: palette.background, borderColor: palette.border }]}>

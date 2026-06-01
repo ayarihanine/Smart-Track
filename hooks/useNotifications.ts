@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
+import { router } from 'expo-router';
 import { useSettingsStore } from '@/store/settingsStore';
+import { savePushToken, clearPushToken } from '@/lib/api';
 
 let Notifications: any = null;
 try {
@@ -25,12 +27,25 @@ export function useNotifications() {
   const notificationListener = useRef<any>(null);
   const responseListener = useRef<any>(null);
   const notificationsEnabled = useSettingsStore(s => s.notificationsEnabled);
+  const savedToken = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!notificationsEnabled || !Notifications) return;
+    if (!notificationsEnabled || !Notifications) {
+      if (savedToken.current) {
+        clearPushToken();
+        savedToken.current = null;
+      }
+      return;
+    }
 
     registerForPushNotificationsAsync().then(token => {
-      if (token) setExpoPushToken(token);
+      if (token) {
+        setExpoPushToken(token);
+        if (token !== savedToken.current) {
+          savePushToken(token);
+          savedToken.current = token;
+        }
+      }
     });
 
     notificationListener.current = Notifications.addNotificationReceivedListener((notification: any) => {
@@ -38,7 +53,14 @@ export function useNotifications() {
     });
 
     responseListener.current = Notifications.addNotificationResponseReceivedListener((response: any) => {
-      console.log(response);
+      const data = response?.notification?.request?.content?.data;
+      if (data?.cardId) {
+        router.push(`/card/${data.cardId}`);
+      } else if (data?.screen) {
+        router.push(data.screen as any);
+      } else {
+        router.push('/notifications' as any);
+      }
     });
 
     return () => {
@@ -79,6 +101,7 @@ async function registerForPushNotificationsAsync() {
       finalStatus = status;
     }
     if (finalStatus !== 'granted') {
+      clearPushToken();
       return;
     }
     try {

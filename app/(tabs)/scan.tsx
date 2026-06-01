@@ -5,149 +5,89 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { LinearGradient } from 'expo-linear-gradient';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
-import { recordScan, getCard, getCurrentBatchId } from '@/lib/api';
-import { supabase } from '@/lib/supabase';
+import { recordScan } from '@/lib/api';
+import { getSupabaseClient } from '@/lib/supabase';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
-import { useOfflineStore } from '@/store/offlineStore';
-import { useSettingsStore } from '@/store/settingsStore';
-import { SyncBanner } from '@/components/SyncBanner';
 import { ZebraScanPanel } from '@/components/ZebraScanPanel';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useRouter } from 'expo-router';
 
-const QUICK_IDS = ['CARD00001', 'CARD00002', 'CARD99887', 'CARD55443', 'CARD12345'];
-
-type ScanMode = 'camera' | 'manual' | 'zebra';
-type QueuedBatchScan = { cardId: string; stage: string; productName?: string; batchId?: string | null };
+type ScanMode = 'manual' | 'zebra';
 
 export default function ScanScreen() {
+  const router = useRouter();
   const { t } = useTranslation();
   const { palette, isDark } = useTheme();
-  const [permission, requestPermission] = useCameraPermissions();
-  const [mode, setMode] = useState<ScanMode>('camera');
+
+  const [mode, setMode] = useState<ScanMode>('manual');
   const [cardInput, setCardInput] = useState('');
   const [scanning, setScanning] = useState(false);
   const [scanned, setScanned] = useState(false);
   const [scannedCard, setScannedCard] = useState<{ cardId: string; stage: string; productName?: string } | null>(null);
 
-  const [isBatchMode, setIsBatchMode] = useState(false);
-  const [batchQueue, setBatchQueue] = useState<QueuedBatchScan[]>([]);
-
-  const addPendingScan = useOfflineStore(s => s.addPendingScan);
-  const offlineModeEnabled = useSettingsStore(s => s.offlineModeEnabled);
-
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const slideAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    if (mode === 'camera' && !permission?.granted) {
-      requestPermission();
-    }
-  }, [mode, permission, requestPermission]);
+  const fadeAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     const pulse = Animated.loop(
       Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1.05, duration: 1000, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1, duration: 1000, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1.08, duration: 1200, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1, duration: 1200, useNativeDriver: true }),
       ])
     );
     pulse.start();
     return () => pulse.stop();
   }, [pulseAnim]);
 
-  async function processTrack(id: string, source: string) {
+  async function processTrack(id: string) {
+    if (!id.trim()) return;
     setScanning(true);
     try {
-      const { data: existing, error: checkError } = await supabase
-        .from('electronic_cards')
-        .select('id, status, scan_points')
-        .eq('card_id', id.trim())
-        .single()
+      // Case-insensitive card lookup to handle mixed-case card IDs
+      let actualCardId = id.trim().toUpperCase();
+      let stage = 'Assembly';
+      let productName: string | undefined;
 
-      if (existing) {
-        if (existing.scan_points && existing.scan_points >= 2) {
-          Alert.alert('⚠️ Duplicate Scan', `Card ${id} already scanned ${existing.scan_points} times.`)
-          setScanning(false)
-          return
+      const supabase = getSupabaseClient();
+      if (supabase) {
+        const { data: cards } = await supabase
+          .from('electronic_cards')
+          .select('card_id, current_machine, product_name')
+          .ilike('card_id', id.trim())
+          .limit(1);
+        const found = cards?.[0];
+        if (found) {
+          actualCardId = found.card_id;
+          stage = found.current_machine || 'Assembly';
+          productName = found.product_name;
         }
-        await supabase.from('electronic_cards').update({
-          scan_points: (existing.scan_points || 0) + 1,
-          updated_at: new Date().toISOString()
-        }).eq('id', existing.id)
-        Alert.alert('✅ Updated', `Card ${id} scan count incremented.`)
-        setScanning(false)
-        return
       }
 
-      // 1. Try to find in real database
-      const card = await getCard(id);
-      const stage = card?.currentMachine || 'Stage 1: Assembly';
-      const batchId = await getCurrentBatchId();
+      await recordScan({
+        cardId: actualCardId,
+        location: 'Manual Entry',
+        stage,
+      });
 
-      if (isBatchMode) {
-        setBatchQueue(prev => [...prev, { cardId: id, stage, productName: card?.productName, batchId }]);
-        setCardInput('');
-      } else {
-        // 2. Record the scan immediately if not in batch mode
-        try {
-          await recordScan({
-            cardId: id,
-            location: source,
-            stage: stage,
-            batchId,
-          });
-        } catch (err: any) {
-          if (err?.code === 'CARD_NOT_FOUND' || err?.message?.includes('Card not found')) {
-            Alert.alert(t('scanFailed'), `${t('unableToVerify')}: ${id}\n\nSystem details: ${err?.message}`);
-            setScanning(false);
-            return;
-          }
+      setScannedCard({ cardId: actualCardId, stage, productName });
+      setScanned(true);
+      setCardInput('');
 
-          // Offline fallback - ONLY if enabled in settings
-          if (offlineModeEnabled) {
-            addPendingScan({
-              cardId: id,
-              location: source,
-              stage: stage,
-              batchId,
-            });
-          } else {
-            Alert.alert(t('scanFailed'), t('connectionErrorNoQueue'));
-          }
-        }
-
-        setScannedCard({ cardId: id, stage, productName: card?.productName });
-        setScanned(true);
-
-        // Success animation
-        Animated.spring(slideAnim, {
-          toValue: 1,
-          tension: 50,
-          friction: 7,
-          useNativeDriver: true,
-        }).start();
-      }
-
-    } catch {
-      Alert.alert(t('scanFailed'), t('unableToVerify'));
+      Animated.parallel([
+        Animated.spring(slideAnim, { toValue: 1, tension: 50, friction: 7, useNativeDriver: true }),
+        Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }),
+      ]).start();
+    } catch (err: any) {
+      console.error('processTrack error:', err?.message || err);
+      const msg = err?.message?.includes('Card not found')
+        ? `Card "${id}" not found in the system.`
+        : `Tracking failed: ${err?.message || 'Unknown error'}`;
+      Alert.alert('Scan Failed', msg);
     } finally {
       setScanning(false);
-    }
-  }
-
-  function handleManualTrack() {
-    if (!cardInput.trim()) return;
-    processTrack(cardInput.trim().toUpperCase(), 'Manual App Entry');
-  }
-
-
-
-  function handleViewDetails() {
-    if (scannedCard) {
-      router.push(`/card/${scannedCard.cardId}` as any);
     }
   }
 
@@ -156,267 +96,164 @@ export default function ScanScreen() {
     setScannedCard(null);
     setCardInput('');
     slideAnim.setValue(0);
+    fadeAnim.setValue(0);
   }
 
-  async function handleCommitBatch() {
-    if (batchQueue.length === 0) return;
-    
-    setScanning(true);
-    const items = [...batchQueue];
-    
-    let successCount = 0;
-    for (const item of items) {
-      try {
-        await recordScan({
-          cardId: item.cardId,
-          location: 'Batch Mode',
-          stage: item.stage,
-          batchId: item.batchId,
-        });
-        successCount++;
-      } catch (err: any) {
-         if (offlineModeEnabled && err?.code !== 'CARD_NOT_FOUND') {
-            addPendingScan({
-              cardId: item.cardId,
-              location: 'Batch Mode',
-              stage: item.stage,
-              batchId: item.batchId,
-            });
-            successCount++; // counts as queued offline
-         }
-      }
-    }
-    
-    setScanning(false);
-    setBatchQueue([]);
-    Alert.alert(t('batchComplete'), `${t('batchMessage')} (${successCount}/${items.length})`);
-  }
-
+  /* ─── Success Screen ─── */
   if (scanned && scannedCard) {
     return (
-      <View style={styles.successScreen}>
-        <Animated.View style={[styles.successIcon, { transform: [{ scale: pulseAnim }], backgroundColor: 'transparent' }]}>
-          <View style={styles.successIconBadge}>
-            <Ionicons name="card-outline" size={42} color={colors.primary} />
-            <View style={styles.successCheck}>
-              <Ionicons name="checkmark" size={14} color={colors.white} />
-            </View>
-          </View>
+      <SafeAreaView style={[styles.successContainer, { backgroundColor: isDark ? '#0f172a' : '#0F172A' }]} edges={['top', 'bottom']}>
+        <Animated.View style={[styles.successPulse, { transform: [{ scale: pulseAnim }] }]}>
+          <LinearGradient colors={['#10B981', '#059669']} style={styles.successCircle}>
+            <Ionicons name="checkmark" size={48} color="#fff" />
+          </LinearGradient>
         </Animated.View>
 
-        <Text style={styles.successTitle}>{t('scanSuccessfulTitle')}</Text>
+        <Text style={styles.successHeadline}>Card Tracked!</Text>
 
-        <Animated.View style={[styles.successCard, {
-          transform: [{ translateY: slideAnim.interpolate({ inputRange: [0, 1], outputRange: [100, 0] }) }]
-        }]}>
-          <View style={styles.successHeader}>
-            <Ionicons name="cube-outline" size={24} color={colors.primary} />
-            <Text style={styles.successCardTitle}>{scannedCard.productName || t('pcbUnit')}</Text>
-          </View>
-
-          <View style={styles.divider} />
-
-          <View style={styles.infoGrid}>
-            <View style={styles.infoItem}>
-              <Text style={styles.infoLabel}>{t('cardIdLabel')}</Text>
-              <Text style={styles.infoValue}>{scannedCard.cardId}</Text>
-            </View>
-            <View style={styles.infoItem}>
-              <Text style={styles.infoLabel}>{t('stationLabel')}</Text>
-              <Text style={styles.infoValue}>{scannedCard.stage}</Text>
+        <Animated.View style={[
+          styles.successCard,
+          { transform: [{ translateY: slideAnim.interpolate({ inputRange: [0, 1], outputRange: [80, 0] }) }], opacity: fadeAnim }
+        ]}>
+          <View style={styles.successRow}>
+            <View style={styles.successDot} />
+            <View>
+              <Text style={styles.successCardLabel}>CARD ID</Text>
+              <Text style={styles.successCardValue}>{scannedCard.cardId}</Text>
             </View>
           </View>
+          <View style={[styles.successRow, { borderTopWidth: 1, borderTopColor: '#F3F4F6', marginTop: 12, paddingTop: 12 }]}>
+            <View style={[styles.successDot, { backgroundColor: '#8B5CF6' }]} />
+            <View>
+              <Text style={styles.successCardLabel}>CURRENT STAGE</Text>
+              <Text style={styles.successCardValue}>{scannedCard.stage}</Text>
+            </View>
+          </View>
+          {scannedCard.productName && (
+            <View style={[styles.successRow, { borderTopWidth: 1, borderTopColor: '#F3F4F6', marginTop: 12, paddingTop: 12 }]}>
+              <View style={[styles.successDot, { backgroundColor: '#F59E0B' }]} />
+              <View>
+                <Text style={styles.successCardLabel}>PRODUCT</Text>
+                <Text style={styles.successCardValue}>{scannedCard.productName}</Text>
+              </View>
+            </View>
+          )}
         </Animated.View>
 
-        <TouchableOpacity style={styles.primaryBtn} onPress={handleViewDetails}>
-          <Text style={styles.primaryBtnText}>{t('detailedAnalytics')}</Text>
-          <Ionicons name="stats-chart" size={18} color={colors.white} />
+        <TouchableOpacity style={styles.resetBtn} onPress={handleReset}>
+          <Ionicons name="scan-outline" size={20} color="#fff" />
+          <Text style={styles.resetBtnText}>Track Another Card</Text>
         </TouchableOpacity>
-
-        <TouchableOpacity style={styles.secondaryBtn} onPress={handleReset}>
-          <Text style={styles.secondaryBtnText}>{t('dismissNext')}</Text>
-        </TouchableOpacity>
-      </View>
+      </SafeAreaView>
     );
   }
 
-  const getHeaderSubtitle = () => {
-    switch (mode) {
-      case 'camera': return t('qrScanner');
-
-      case 'manual': return t('manualRegistry');
-      case 'zebra': return 'Zebra Scanner';
-      default: return '';
-    }
-  };
-
+  /* ─── Main Scan Screen ─── */
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
-      <SyncBanner />
-      {/* Dynamic Header */}
+      {/* Header */}
       <View style={[styles.header, { backgroundColor: palette.background, borderBottomColor: palette.border }]}>
-        <View>
-          <Text style={[styles.headerTitle, { color: palette.text }]}>{t('cardIdentifier')}</Text>
-          <Text style={styles.headerSubtitle}>{getHeaderSubtitle()}</Text>
+        <TouchableOpacity
+          style={[styles.backBtn, { backgroundColor: isDark ? '#1e293b' : '#F3F4F6' }]}
+          onPress={() => router.back()}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Ionicons name="arrow-back" size={20} color={palette.text} />
+        </TouchableOpacity>
+        <View style={{ flex: 1, marginLeft: 12 }}>
+          <Text style={[styles.headerTitle, { color: palette.text }]}>Card Identifier</Text>
+          <Text style={[styles.headerSub, { color: palette.textSecondary }]}>
+            {mode === 'manual' ? 'Manual Registry Entry' : 'Zebra Scanner Input'}
+          </Text>
         </View>
-        <View style={styles.headerRightActions}>
-          <TouchableOpacity
-            style={[styles.batchToggle, isBatchMode && styles.batchToggleActive]}
-            onPress={() => setIsBatchMode(!isBatchMode)}
-          >
-            <Ionicons name="layers-outline" size={18} color={isBatchMode ? colors.white : palette.textTertiary} />
-            <Text style={[styles.batchToggleText, { color: isBatchMode ? colors.white : palette.textTertiary }]}>
-              {t('batch')}
-            </Text>
-          </TouchableOpacity>
-          <View style={styles.modeToggle}>
-            {(['camera', 'manual', 'zebra'] as ScanMode[]).map((m) => (
-              <TouchableOpacity
-                key={m}
-                onPress={() => setMode(m)}
-                style={[styles.modeBtn, mode === m && styles.modeBtnActive]}
-              >
-                <Ionicons
-                  name={m === 'camera' ? 'camera' : m === 'zebra' ? 'barcode' : 'keypad'}
-                  size={18}
-                  color={mode === m ? colors.white : palette.textTertiary}
-                />
-              </TouchableOpacity>
-            ))}
-          </View>
+        {/* Mode Toggle */}
+        <View style={[styles.modeToggle, { backgroundColor: isDark ? '#334155' : '#F3F4F6' }]}>
+          {(['manual', 'zebra'] as ScanMode[]).map((m) => (
+            <TouchableOpacity
+              key={m}
+              onPress={() => setMode(m)}
+              style={[styles.modeBtn, mode === m && { backgroundColor: palette.primary }]}
+              activeOpacity={0.8}
+            >
+              <Ionicons
+                name={m === 'zebra' ? 'barcode-outline' : 'keypad-outline'}
+                size={18}
+                color={mode === m ? '#fff' : palette.textTertiary}
+              />
+              <Text style={[styles.modeBtnText, { color: mode === m ? '#fff' : palette.textTertiary }]}>
+                {m === 'manual' ? 'Manual' : 'Zebra'}
+              </Text>
+            </TouchableOpacity>
+          ))}
         </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
         {mode === 'zebra' && <ZebraScanPanel />}
 
-        {mode === 'camera' && (
-          <View style={styles.centerContent}>
-            <View style={styles.viewfinderContainer}>
-              <View style={[styles.viewfinder, { backgroundColor: isDark ? '#1e293b' : '#0F172A', overflow: 'hidden' }]}>
-                {mode === 'camera' && permission?.granted ? (
-                  <CameraView
-                    style={StyleSheet.absoluteFill}
-                    facing="back"
-                    barcodeScannerSettings={{
-                      barcodeTypes: [
-                        "qr",
-                        "pdf417",
-                        "aztec",
-                        "datamatrix",
-                        "ean13",
-                        "ean8",
-                        "upc_e",
-                        "upc_a",
-                        "code128",
-                        "code39",
-                        "code93",
-                        "itf14",
-                        "codabar",
-                      ],
-                    }}
-                    onBarcodeScanned={({ data }) => {
-                      if (!scanning && !scanned) {
-                        processTrack(data, 'Optical Scanner');
-                      }
-                    }}
-                  />
-                ) : (
-                  <View style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center' }]}>
-                    <Ionicons name="camera-reverse-outline" size={48} color={palette.textTertiary} />
-                    <Text style={{ color: palette.textTertiary, marginTop: 10 }}>{t('cameraReady')}</Text>
-                  </View>
-                )}
-                <Animated.View style={[styles.scanFrame, { transform: [{ scale: pulseAnim }] }]}>
-                  <View style={styles.cornerTL} />
-                  <View style={styles.cornerTR} />
-                  <View style={styles.cornerBL} />
-                  <View style={styles.cornerBR} />
-                </Animated.View>
-              </View>
-              <View style={styles.cameraOverlay}>
-                <Ionicons name="flash-off" size={24} color={colors.white} />
-              </View>
-            </View>
-            <Text style={[styles.hintText, { color: palette.textSecondary }]}>{t('opticalReader')}</Text>
-            <View style={styles.statusIndicator}>
-              <View style={[styles.statusDot, { backgroundColor: '#10B981' }]} />
-              <Text style={[styles.statusText, { color: palette.textSecondary }]}>{t('cameraReady')}</Text>
-            </View>
-          </View>
-        )}
-
-
-
         {mode === 'manual' && (
-          <View style={styles.manualEntry}>
-            <Text style={styles.inputLabel}>{t('registryIdentifier')}</Text>
-            <View style={[styles.inputWrapper, { backgroundColor: palette.background, borderColor: palette.border }]}>
-              <Ionicons name="search" size={20} color={palette.textTertiary} />
+          <View style={styles.manualSection}>
+            {/* Icon Banner */}
+            <View style={[styles.iconBanner, { backgroundColor: isDark ? '#1e293b' : '#EEF2FF', borderColor: isDark ? '#334155' : '#C7D2FE' }]}>
+              <LinearGradient colors={['#6366F1', '#4F46E5']} style={styles.iconGradient}>
+                <Ionicons name="card-outline" size={32} color="#fff" />
+              </LinearGradient>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.iconBannerTitle, { color: palette.text }]}>Manual Card Tracking</Text>
+                <Text style={[styles.iconBannerSub, { color: palette.textSecondary }]}>
+                  Enter the card reference number to track its production stage
+                </Text>
+              </View>
+            </View>
+
+            {/* Input */}
+            <Text style={[styles.inputLabel, { color: palette.textSecondary }]}>Card Reference</Text>
+            <View style={[styles.inputWrapper, {
+              backgroundColor: palette.background,
+              borderColor: cardInput.trim() ? palette.primary : palette.border,
+            }]}>
+              <Ionicons name="search-outline" size={20} color={cardInput.trim() ? palette.primary : palette.textTertiary} />
               <TextInput
                 style={[styles.input, { color: palette.text }]}
-                placeholder={t('cardIdPlaceholder')}
+                placeholder="e.g. CARD00001"
                 placeholderTextColor={palette.textTertiary}
                 value={cardInput}
-                onChangeText={setCardInput}
+                onChangeText={(v) => setCardInput(v.toUpperCase())}
                 autoCapitalize="characters"
-                onSubmitEditing={handleManualTrack}
+                returnKeyType="go"
+                onSubmitEditing={() => processTrack(cardInput)}
               />
+              {cardInput.length > 0 && (
+                <TouchableOpacity onPress={() => setCardInput('')}>
+                  <Ionicons name="close-circle" size={18} color={palette.textTertiary} />
+                </TouchableOpacity>
+              )}
             </View>
 
+            {/* Track Button */}
             <TouchableOpacity
-              style={[styles.trackBtn, !cardInput.trim() && styles.trackBtnDisabled]}
-              onPress={handleManualTrack}
+              style={[styles.trackBtn, (!cardInput.trim() || scanning) && { opacity: 0.5 }]}
+              onPress={() => processTrack(cardInput)}
               disabled={!cardInput.trim() || scanning}
+              activeOpacity={0.85}
             >
               {scanning ? (
-                <ActivityIndicator color={colors.white} />
+                <ActivityIndicator color="#fff" />
               ) : (
                 <>
-                  <Text style={styles.trackBtnText}>{t('initializeTracking')}</Text>
-                  <Ionicons name="navigate-circle" size={20} color={colors.white} />
+                  <Ionicons name="navigate-circle-outline" size={22} color="#fff" />
+                  <Text style={styles.trackBtnText}>Initialize Tracking</Text>
                 </>
               )}
             </TouchableOpacity>
 
-            <View style={styles.quickSection}>
-              <Text style={styles.quickLabel}>{t('frequentEntries')}</Text>
-              <View style={styles.quickGrid}>
-                {QUICK_IDS.map(id => (
-                  <TouchableOpacity
-                    key={id}
-                    style={[styles.quickChip, { backgroundColor: palette.background, borderColor: palette.border }]}
-                    onPress={() => setCardInput(id)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.quickChipText}>{id}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+            {/* Info Card */}
+            <View style={[styles.infoCard, { backgroundColor: isDark ? '#1e293b' : '#F0FDF4', borderColor: isDark ? '#334155' : '#BBF7D0' }]}>
+              <Ionicons name="information-circle-outline" size={18} color="#10B981" />
+              <Text style={[styles.infoCardText, { color: palette.textSecondary }]}>
+                Cards are automatically registered if not yet in the system. Their stage is updated on every scan.
+              </Text>
             </View>
-          </View>
-        )}
-
-        {isBatchMode && batchQueue.length > 0 && (
-          <View style={styles.batchSection}>
-            <View style={styles.batchHeader}>
-              <Text style={[styles.batchTitle, { color: palette.text }]}>{t('batchQueue').replace('(X)', `(${batchQueue.length})`)}</Text>
-              <TouchableOpacity onPress={() => setBatchQueue([])}>
-                <Text style={styles.clearText}>{t('clearAll')}</Text>
-              </TouchableOpacity>
-            </View>
-            {batchQueue.map((item, idx) => (
-              <View key={`${item.cardId}-${idx}`} style={[styles.batchItem, { backgroundColor: palette.background, borderColor: palette.border }]}>
-                <View style={styles.batchItemInfo}>
-                  <Text style={[styles.batchItemId, { color: palette.text }]}>{item.cardId}</Text>
-                  <Text style={[styles.batchItemStage, { color: palette.textSecondary }]}>{item.stage}</Text>
-                </View>
-                <Ionicons name="checkmark-circle" size={20} color="#10B981" />
-              </View>
-            ))}
-            <TouchableOpacity style={styles.commitBtn} onPress={handleCommitBatch}>
-              <Text style={styles.commitBtnText}>{t('commitAll')}</Text>
-            </TouchableOpacity>
           </View>
         )}
       </ScrollView>
@@ -425,142 +262,150 @@ export default function ScanScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.backgroundSecondary },
+  container: { flex: 1 },
   header: {
-    paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.border,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: 1,
   },
-  headerTitle: { ...typography.h4, color: colors.text },
-  headerSubtitle: { ...typography.tiny, color: colors.textTertiary, fontWeight: '700', textTransform: 'uppercase' },
+  backBtn: {
+    width: 38, height: 38, borderRadius: 11,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  headerTitle: { ...typography.h4, fontWeight: '800' },
+  headerSub: { ...typography.tiny, marginTop: 2, fontWeight: '600' },
   modeToggle: {
-    flexDirection: 'row', backgroundColor: colors.backgroundTertiary,
-    borderRadius: borderRadius.md, padding: 4, gap: 4,
+    flexDirection: 'row',
+    borderRadius: borderRadius.md,
+    padding: 3,
+    gap: 3,
   },
-  headerRightActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  batchToggle: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 12, paddingVertical: 6, borderRadius: borderRadius.full,
-    backgroundColor: colors.backgroundTertiary,
-  },
-  batchToggleActive: { backgroundColor: colors.primary },
-  batchToggleText: { ...typography.tiny, fontWeight: '700' },
-  modeBtn: { padding: 8, borderRadius: borderRadius.sm },
-  modeBtnActive: { backgroundColor: colors.primary, ...shadows.xs },
-  scrollContent: { flexGrow: 1 },
-  centerContent: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: spacing.xxl },
-  viewfinderContainer: { position: 'relative', marginBottom: spacing.xl },
-  viewfinder: {
-    width: 280, height: 280, backgroundColor: '#0F172A',
-    borderRadius: 32, alignItems: 'center', justifyContent: 'center',
-    ...shadows.lg,
-  },
-  scanFrame: { width: 180, height: 180, position: 'relative' },
-  cornerTL: { position: 'absolute', top: 0, left: 0, width: 30, height: 30, borderTopWidth: 4, borderLeftWidth: 4, borderColor: colors.primary, borderTopLeftRadius: 12 },
-  cornerTR: { position: 'absolute', top: 0, right: 0, width: 30, height: 30, borderTopWidth: 4, borderRightWidth: 4, borderColor: colors.primary, borderTopRightRadius: 12 },
-  cornerBL: { position: 'absolute', bottom: 0, left: 0, width: 30, height: 30, borderBottomWidth: 4, borderLeftWidth: 4, borderColor: colors.primary, borderBottomLeftRadius: 12 },
-  cornerBR: { position: 'absolute', bottom: 0, right: 0, width: 30, height: 30, borderBottomWidth: 4, borderRightWidth: 4, borderColor: colors.primary, borderBottomRightRadius: 12 },
-  cameraOverlay: { position: 'absolute', top: 16, right: 16 },
-  hintText: { ...typography.body, color: colors.textSecondary, marginBottom: spacing.sm },
-  statusIndicator: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  statusDot: { width: 8, height: 8, borderRadius: 4 },
-  statusText: { ...typography.caption, color: colors.textSecondary, fontWeight: '600' },
-  hardwarePlate: {
-    width: '85%', backgroundColor: colors.white, borderRadius: borderRadius.xl,
-    padding: spacing.xl, alignItems: 'center', ...shadows.md, borderWidth: 1, borderColor: colors.border,
-  },
-  hardwareTitle: { ...typography.h4, color: colors.text, marginTop: spacing.md },
-  hardwareDesc: { ...typography.small, color: colors.textTertiary, textAlign: 'center', marginTop: spacing.sm, lineHeight: 18 },
-  connectBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, width: '100%',
-    backgroundColor: colors.primary, borderRadius: borderRadius.md,
-    height: 52, justifyContent: 'center', marginTop: spacing.xl,
-  },
-  connectBtnDisabled: { backgroundColor: colors.textTertiary },
-  connectBtnText: { ...typography.bodyBold, color: colors.white },
-  waitingText: { ...typography.tiny, color: colors.primary, marginTop: spacing.md, fontWeight: 'bold' },
-  manualEntry: { padding: spacing.xl },
-  inputLabel: { ...typography.captionBold, color: colors.textTertiary, marginBottom: spacing.sm },
-  inputWrapper: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: colors.white,
-    paddingHorizontal: spacing.md, height: 56, borderRadius: borderRadius.md,
-    borderWidth: 2, borderColor: colors.border, gap: spacing.sm,
-  },
-  input: { flex: 1, ...typography.bodyBold, color: colors.text },
-  trackBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, width: '100%',
-    backgroundColor: colors.text, borderRadius: borderRadius.md,
-    height: 52, justifyContent: 'center', marginTop: spacing.lg,
-  },
-  trackBtnDisabled: { opacity: 0.5 },
-  trackBtnText: { ...typography.bodyBold, color: colors.white },
-  quickSection: { marginTop: spacing.xxl },
-  quickLabel: { ...typography.captionBold, color: colors.textTertiary, marginBottom: spacing.md },
-  quickGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  quickChip: {
-    backgroundColor: colors.white, paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm, borderRadius: borderRadius.full,
-    borderWidth: 1, borderColor: colors.border,
-  },
-  quickChipText: { ...typography.smallBold, color: colors.primary },
-  // Success Screen
-  successScreen: { flex: 1, backgroundColor: '#0F172A', alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
-  successIcon: { width: 120, height: 120, borderRadius: 60, backgroundColor: '#10B98120', alignItems: 'center', justifyContent: 'center', marginBottom: spacing.xl },
-  successIconBadge: {
-    width: 84,
-    height: 84,
-    borderRadius: 42,
-    backgroundColor: colors.white,
+  modeBtn: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: borderRadius.sm,
   },
-  successCheck: {
-    position: 'absolute',
-    right: -2,
-    bottom: -2,
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: colors.success,
-    borderWidth: 2,
-    borderColor: '#0F172A',
+  modeBtnText: { ...typography.tiny, fontWeight: '700' },
+  scrollContent: { flexGrow: 1, padding: spacing.lg },
+  manualSection: { gap: spacing.md },
+  iconBanner: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-  },
-  successTitle: { ...typography.h2, color: colors.white, marginBottom: spacing.xxl },
-  successCard: { width: '100%', backgroundColor: colors.white, borderRadius: borderRadius.xl, padding: spacing.xl, ...shadows.xl },
-  successHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.md },
-  successCardTitle: { ...typography.h4, color: colors.text },
-  divider: { height: 1, backgroundColor: colors.border, marginBottom: spacing.md },
-  infoGrid: { flexDirection: 'row', gap: spacing.xl },
-  infoItem: { flex: 1 },
-  infoLabel: { ...typography.tiny, color: colors.textTertiary, fontWeight: 'bold', marginBottom: 4 },
-  infoValue: { ...typography.bodyBold, color: colors.text },
-  primaryBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: spacing.md, width: '100%',
-    backgroundColor: colors.primary, borderRadius: borderRadius.md,
-    height: 56, justifyContent: 'center', marginTop: spacing.xxl,
-  },
-  primaryBtnText: { ...typography.bodyBold, color: colors.white },
-  secondaryBtn: { marginTop: spacing.lg, padding: spacing.md },
-  secondaryBtnText: { ...typography.body, color: colors.textTertiary },
-  // Batch Section
-  batchSection: { padding: spacing.xl, borderTopWidth: 1, borderTopColor: colors.border },
-  batchHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md },
-  batchTitle: { ...typography.captionBold, textTransform: 'uppercase' },
-  clearText: { ...typography.tiny, color: colors.primary, fontWeight: 'bold' },
-  batchItem: {
-    flexDirection: 'row', alignItems: 'center', padding: spacing.md,
-    borderRadius: borderRadius.lg, borderWidth: 1, marginBottom: spacing.sm,
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: borderRadius.xl,
+    borderWidth: 1,
     ...shadows.xs,
   },
-  batchItemInfo: { flex: 1 },
-  batchItemId: { ...typography.bodyBold },
-  batchItemStage: { ...typography.tiny, marginTop: 2 },
-  commitBtn: {
-    backgroundColor: colors.primary, height: 48, borderRadius: borderRadius.md,
-    alignItems: 'center', justifyContent: 'center', marginTop: spacing.md,
-    ...shadows.sm,
+  iconGradient: {
+    width: 60,
+    height: 60,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  commitBtnText: { ...typography.bodyBold, color: colors.white },
+  iconBannerTitle: { ...typography.bodyBold, marginBottom: 2 },
+  iconBannerSub: { ...typography.tiny },
+  inputLabel: { ...typography.captionBold, marginBottom: 4 },
+  inputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.md,
+    height: 56,
+    borderRadius: borderRadius.lg,
+    borderWidth: 2,
+    gap: spacing.sm,
+  },
+  input: { flex: 1, ...typography.bodyBold, letterSpacing: 1 },
+  trackBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    height: 56,
+    borderRadius: borderRadius.lg,
+    backgroundColor: '#4F46E5',
+    ...shadows.md,
+  },
+  trackBtnText: { ...typography.bodyBold, color: '#fff' },
+  infoCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    marginTop: spacing.sm,
+  },
+  infoCardText: { ...typography.small, flex: 1, lineHeight: 18 },
+  // Success screen
+  successContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.xl,
+    gap: spacing.xl,
+  },
+  successPulse: {
+    marginBottom: spacing.sm,
+  },
+  successCircle: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...shadows.xl,
+  },
+  successHeadline: {
+    ...typography.h2,
+    color: '#fff',
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  successCard: {
+    width: '100%',
+    backgroundColor: '#fff',
+    borderRadius: borderRadius.xl,
+    padding: spacing.lg,
+    ...shadows.xl,
+  },
+  successRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  successDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#10B981',
+  },
+  successCardLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#9CA3AF',
+    letterSpacing: 0.8,
+  },
+  successCardValue: {
+    ...typography.bodyBold,
+    color: '#111827',
+    marginTop: 2,
+  },
+  resetBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: '#4F46E5',
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.md,
+    borderRadius: borderRadius.full,
+    ...shadows.md,
+  },
+  resetBtnText: { ...typography.bodyBold, color: '#fff' },
 });

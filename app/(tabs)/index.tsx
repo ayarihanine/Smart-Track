@@ -14,18 +14,20 @@ import AnimatedReanimated, {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
 import { useAuthStore } from '@/store/authStore';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
-import { fetchAlerts, getCards, getAnalytics, deleteCard } from '@/lib/api';
-import { getSupabaseClient } from '@/lib/supabase';
+import { fetchAlerts, fetchPendingInspectionsCount, getCards, fetchTodayProductionStats, TodayProductionStats } from '@/lib/api';
+import { getSupabaseClient, uploadFileToStorage } from '@/lib/supabase';
+import { verifyStorageSetup } from '@/lib/storageDebug';
+import { getTodayBounds } from '@/lib/dates';
 import { ElectronicCard, UserRole } from '@/types';
 import { SearchModal } from '@/components/SearchModal';
-import { getActiveElapsedMs, useAlertsStore } from '@/store/alertsStore';
+import { useAlertsStore } from '@/store/alertsStore';
 import { useSettingsStore } from '@/store/settingsStore';
+import * as ImagePicker from 'expo-image-picker';
 
 // Using palette-based colors for roles would be tricky since it's static,
 // but we'll use semantically close colors from the design system or the palette where possible.
@@ -36,7 +38,7 @@ const ROLE_COLORS: Record<UserRole, string> = {
 };
 
 
-function CardListItem({ card, onPress, onDelete, palette, primaryColor }: { card: ElectronicCard; onPress: () => void; onDelete?: () => void; palette: any; primaryColor?: string }) {
+function CardListItem({ card, onPress, palette }: { card: ElectronicCard; onPress: () => void; palette: any }) {
   const { t } = useTranslation();
   const { isDark } = useTheme();
   const stageColors: Record<string, string> = {
@@ -90,18 +92,7 @@ function CardListItem({ card, onPress, onDelete, palette, primaryColor }: { card
           </Text>
         </View>
 
-        {onDelete && (
-          <TouchableOpacity
-            style={styles.cardMoreBtn}
-            onPress={(e) => {
-              e.stopPropagation();
-              onDelete();
-            }}
-          >
-            <Ionicons name="trash-outline" size={18} color="#DC2626" />
-          </TouchableOpacity>
-        )}
-        {!onDelete && <Ionicons name="chevron-forward" size={18} color={palette.textDisabled} />}
+        <Ionicons name="chevron-forward" size={18} color={palette.textDisabled} />
       </View>
     </TouchableOpacity>
   );
@@ -148,14 +139,75 @@ export default function HomeScreen() {
   const [isMainMenuVisible, setMainMenuVisible] = useState(false);
   const { checkStuckCards } = useAlertsStore();
   const [unreadAlertsCount, setUnreadAlertsCount] = useState(0);
+  const [uploading, setUploading] = useState(false);
   const stuckThreshold = useSettingsStore(s => s.stuckCardThresholdHours);
 
   const [cards, setCards] = useState<ElectronicCard[]>([]);
   const [cardsLoading, setCardsLoading] = useState(true);
+  const [productionStats, setProductionStats] = useState<TodayProductionStats | null>(null);
+  const [pendingInspectionsCount, setPendingInspectionsCount] = useState(0);
+  // BUG 4 FIX: Track ALL statuses so total === sum of all buckets (no silent drops)
+  const [todayStats, setTodayStats] = useState({
+    total: 0,
+    inProgress: 0,
+    completed: 0,
+    blocked: 0,    // on_hold + cancelled + removed
+    pending: 0,
+  });
+
+  const fetchTodayStats = async () => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    try {
+      const { start, end } = getTodayBounds();
+      const { data, error } = await supabase
+        .from('electronic_cards')
+        .select('status')
+        .gte('created_at', start.toISOString())
+        .lt('created_at', end.toISOString());
+
+      if (!error && data) {
+        let inProgress = 0;
+        let completed = 0;
+        let blocked = 0;
+        let pending = 0;
+
+        // BUG 4 FIX: Count ALL statuses including 'removed' so total reconciles.
+        // blocked bucket = cancelled + removed (non-active, non-complete, non-pending)
+        // on_hold counts as in_progress (temporarily paused, not lost)
+        data.forEach((c: any) => {
+          if (c.status === 'in_progress' || c.status === 'on_hold') inProgress++;
+          else if (c.status === 'completed') completed++;
+          else if (c.status === 'cancelled' || c.status === 'removed') blocked++;
+          else if (c.status === 'pending') pending++;
+          // Any other status is already counted in data.length (total)
+        });
+
+        // Validate: total must equal sum of all buckets
+        const accountedFor = inProgress + completed + blocked + pending;
+        if (accountedFor !== data.length) {
+          console.warn(
+            `[HomeScreen] Stats mismatch: total=${data.length} but buckets sum=${accountedFor}. ` +
+            'Unknown statuses present — they are still counted in Total.'
+          );
+        }
+
+        setTodayStats({
+          total: data.length,   // always the raw count — never derived from buckets
+          inProgress,
+          completed,
+          blocked,
+          pending,
+        });
+      }
+    } catch (err) {
+      console.error('fetchTodayStats failed:', err);
+    }
+  };
 
   const fetchCards = async () => {
     try {
-      const data = await getCards();
+      const data = await getCards({ sortBy: 'recent' });
       setCards(data || []);
     } catch (error) {
       console.error('fetchCards failed:', error);
@@ -164,22 +216,36 @@ export default function HomeScreen() {
     }
   };
 
+  const fetchProductionStats = async () => {
+    try {
+      const stats = await fetchTodayProductionStats();
+      setProductionStats(stats);
+    } catch (error) {
+      console.error('fetchProductionStats failed:', error);
+    }
+  };
+
   useEffect(() => {
     fetchCards();
+    fetchProductionStats();
+    fetchTodayStats();
   }, []);
 
   useEffect(() => {
     let mounted = true;
+    const { start, end } = getTodayBounds();
     fetchAlerts(true).then(rows => {
-      if (mounted) setUnreadAlertsCount(rows.length);
+      const todayAlerts = rows.filter((r: any) => {
+        const t = new Date(r.created_at).getTime();
+        return t >= start.getTime() && t < end.getTime();
+      });
+      if (mounted) setUnreadAlertsCount(todayAlerts.length);
+    });
+    fetchPendingInspectionsCount(start.toISOString(), end.toISOString()).then(count => {
+      if (mounted) setPendingInspectionsCount(count);
     });
     return () => { mounted = false; };
   }, []);
-
-  useQuery({
-    queryKey: ['analytics', 'today'],
-    queryFn: () => getAnalytics('today'),
-  });
 
   // Realtime Subscription
   useEffect(() => {
@@ -197,6 +263,20 @@ export default function HomeScreen() {
         },
         () => {
           fetchCards();
+          fetchTodayStats();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'sensor_data',
+          filter: 'node_id=eq.PI5-NODE-01',
+        },
+        () => {
+          fetchProductionStats();
+          fetchTodayStats();
         }
       )
       .on(
@@ -219,7 +299,7 @@ export default function HomeScreen() {
 
   const completedCount = cards?.filter(c => c.status === 'completed').length || 0;
   const inProgressCount = cards?.filter(c => c.status === 'in_progress').length || 0;
-  const totalCount = cards?.length || 0;
+  const totalCount = cards?.length ?? 0;
   const roleColor = ROLE_COLORS[user?.role || 'operator'];
 
   // Check for stuck cards whenever cards data changes
@@ -239,14 +319,6 @@ export default function HomeScreen() {
     }
   }, [cards, stuckThreshold, checkStuckCards]);
 
-  const thresholdMs = Math.max(36, stuckThreshold) * 60 * 60 * 1000;
-
-  const delayedCards = (cards || []).filter(c => {
-    const referenceTime = c.stageEnteredAt || c.updatedAt;
-    const activeElapsedMs = getActiveElapsedMs(referenceTime, 8, 16);
-    return c.status !== 'completed' && activeElapsedMs > thresholdMs;
-  }).sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
-
   const headerOpacity = scrollY.interpolate({ inputRange: [0, 60], outputRange: [1, 0.95], extrapolate: 'clamp' });
 
   const getGreetingText = () => {
@@ -256,26 +328,138 @@ export default function HomeScreen() {
     return t('evening');
   };
 
-  const handleDelete = async (cardId: string) => {
-    Alert.alert(
-      t('deleteCard') || 'Delete Card',
-      t('deleteCardConfirm') || 'Are you sure you want to delete this card?',
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('delete'),
-          style: 'destructive',
-          onPress: async () => {
-            const success = await deleteCard(cardId);
-            if (success) {
-              fetchCards();
-            } else {
-              Alert.alert(t('error'), t('deleteFailed'));
-            }
-          }
+  const handleReportIssue = async () => {
+    setMainMenuVisible(false);
+    const choice = await new Promise<string | null>((resolve) => {
+      Alert.alert('Report Issue', 'Attach a photo of the problem', [
+        { text: 'Take Photo', onPress: () => resolve('camera') },
+        { text: 'Choose from Gallery', onPress: () => resolve('gallery') },
+        { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) },
+      ]);
+    });
+    if (!choice) return;
+
+    try {
+      let uri: string | undefined;
+      if (choice === 'camera') {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert('Permission Required', 'Camera access is needed to take photos.');
+          return;
         }
-      ]
-    );
+        const result = await ImagePicker.launchCameraAsync({ quality: 0.7, allowsEditing: true });
+        if (!result.canceled && result.assets?.[0]) uri = result.assets[0].uri;
+      } else {
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert('Permission Required', 'Gallery access is needed to select photos.');
+          return;
+        }
+        const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7, allowsEditing: true });
+        if (!result.canceled && result.assets?.[0]) uri = result.assets[0].uri;
+      }
+      if (!uri) return;
+
+      setUploading(true);
+      const supabase = getSupabaseClient();
+      if (!supabase) { Alert.alert('Error', 'Database not configured'); return; }
+
+      // Check authentication status and warn if not logged in
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (!authUser) {
+        console.warn('User not authenticated - photo upload will use anon role');
+      }
+
+      const ext = uri.split('.').pop() || 'jpg';
+      const fileName = `operator_${user?.displayName?.replace(/\s+/g, '_')}_${Date.now()}.${ext}`;
+      
+      try {
+        console.log('[Photo Upload] Starting upload process for:', fileName);
+        console.log('[Photo Upload] URI:', uri);
+        
+        // Fetch the image as a blob
+        console.log('[Photo Upload] Fetching image from local URI...');
+        const response = await fetch(uri, { timeout: 10000 });
+        if (!response.ok) {
+          throw new Error(`Failed to fetch image: ${response.statusText}`);
+        }
+        
+        const blob = await response.blob();
+        console.log('[Photo Upload] Image fetched successfully');
+        console.log('[Photo Upload] Blob details:', { size: blob.size, type: blob.type });
+
+        // Use retry-enabled upload function
+        console.log('[Photo Upload] Starting upload to inspection_photos bucket...');
+        const { error: uploadError, data } = await uploadFileToStorage(
+          'inspection_photos',
+          fileName,
+          blob,
+          { 
+            contentType: `image/${ext}`,
+            maxRetries: 3
+          }
+        );
+
+        if (uploadError) {
+          console.error('[Photo Upload] Upload failed:', {
+            message: uploadError.message,
+            statusCode: (uploadError as any).statusCode || (uploadError as any).status,
+            error: uploadError
+          });
+          
+          // Provide specific error messages based on error type
+          let errorMessage = 'Failed to upload photo.';
+          const statusCode = (uploadError as any).statusCode || (uploadError as any).status;
+          
+          if (statusCode === 403 || uploadError.message?.includes('Permission denied')) {
+            errorMessage = 'Permission denied. Make sure you are logged in and the "inspection_photos" bucket has proper access policies.';
+          } else if (statusCode === 404 || uploadError.message?.includes('not found')) {
+            errorMessage = 'The "inspection_photos" bucket does not exist in Supabase Storage. Please contact your administrator.';
+          } else if (statusCode === 401 || uploadError.message?.includes('Unauthorized')) {
+            errorMessage = 'Authentication failed. Please log in and try again.';
+          } else if (uploadError.message?.includes('network') || uploadError.message?.includes('Network')) {
+            errorMessage = 'Network error. Please check your internet connection and try again.';
+          } else if (uploadError.message?.includes('timeout')) {
+            errorMessage = 'Upload timed out. Please check your internet connection and try again.';
+          } else {
+            errorMessage = uploadError.message || errorMessage;
+          }
+          
+          throw new Error(errorMessage);
+        }
+        
+        console.log('[Photo Upload] Upload successful:', fileName);
+      } catch (err: any) {
+        console.error('[Photo Upload] Process failed:', err);
+        Alert.alert(
+          'Upload Failed', 
+          err?.message || 'Could not upload photo. Please check your internet connection and try again.'
+        );
+        setUploading(false);
+        return;
+      }
+
+      // Get the public URL for the uploaded photo
+      const { data: urlData } = supabase.storage
+        .from('inspection_photos')
+        .getPublicUrl(fileName);
+
+      if (!urlData?.publicUrl) {
+        throw new Error('Failed to generate public URL for uploaded photo');
+      }
+
+      // Navigate to issues screen with photo URL as param
+      router.push({
+        pathname: '/issues',
+        params: { photoUrl: urlData.publicUrl, photoPath: fileName },
+      });
+      Alert.alert('Photo Ready', 'Now add details to create the issue report.');
+    } catch (err: any) {
+      console.error('Report issue error:', err);
+      Alert.alert('Error', err?.message || 'Could not process your photo. Please try again.');
+    } finally {
+      setUploading(false);
+    }
   };
 
   return (
@@ -286,7 +470,7 @@ export default function HomeScreen() {
         showsVerticalScrollIndicator={false}
         onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
         scrollEventThrottle={16}
-        refreshControl={<RefreshControl refreshing={cardsLoading} onRefresh={fetchCards} tintColor={palette.primary} />}
+        refreshControl={<RefreshControl refreshing={cardsLoading} onRefresh={() => { fetchCards(); fetchProductionStats(); fetchTodayStats(); }} tintColor={palette.primary} />}
       >
         {/* Header */}
         <Animated.View style={[styles.header, { opacity: headerOpacity }]}>
@@ -298,9 +482,9 @@ export default function HomeScreen() {
             <TouchableOpacity style={styles.menuBtn} onPress={() => setMainMenuVisible(true)}>
               <Ionicons name="menu" size={24} color={palette.text} />
             </TouchableOpacity>
-            <View>
+            <View style={{ marginLeft: 4 }}>
               <Text style={[styles.userName, { color: palette.text }]}>CardTrack</Text>
-              <Text style={[styles.greeting, { color: palette.textSecondary }]}>{getGreetingText()}, {user?.displayName}</Text>
+              <Text style={[styles.greeting, { color: palette.textSecondary }]}>{getGreetingText()}, {user?.displayName || 'User'}</Text>
             </View>
           </View>
           <View style={styles.headerRight}>
@@ -309,7 +493,7 @@ export default function HomeScreen() {
             </TouchableOpacity>
 
             {/* Notification Bell with Badge */}
-            <TouchableOpacity style={styles.searchBtn} onPress={() => router.push('/notifications')}>
+            <TouchableOpacity style={styles.notifBtn} onPress={() => router.push('/notifications')}>
               <View>
                 <Ionicons name="notifications-outline" size={24} color={palette.text} />
                 {unreadAlertsCount > 0 && (
@@ -319,9 +503,6 @@ export default function HomeScreen() {
                 )}
               </View>
             </TouchableOpacity>
-            <View style={[styles.roleBadge, { backgroundColor: roleColor + '20' }]}>
-              <Text style={[styles.roleText, { color: roleColor }]}>{user?.role?.toUpperCase()}</Text>
-            </View>
             <TouchableOpacity style={styles.avatarBtn} onPress={() => router.push('/(tabs)/profile')}>
               <View style={[styles.avatar, { backgroundColor: roleColor, overflow: 'hidden' }]}>
                 {user?.avatarUrl ? (
@@ -338,98 +519,126 @@ export default function HomeScreen() {
 
 
 
-        {/* Stats Row */}
+        {/* Today's Stats Banner */}
         <AnimatedReanimated.View
           entering={FadeInDown.duration(800).delay(200)}
-          style={styles.statsRow}
+          style={styles.statsBannerWrap}
         >
-          <View style={[styles.statCard, { backgroundColor: palette.background, borderColor: palette.border, borderWidth: 1 }]}>
-            <View style={[styles.statIcon, { backgroundColor: isDark ? '#1e3a8a' : '#EFF6FF' }]}>
-              <Ionicons name="apps" size={24} color={palette.primary} />
-            </View>
-            <View style={styles.statInfo}>
-              <Text style={[styles.statValue, { color: palette.text }]}>{totalCount}</Text>
-              <Text style={[styles.statLabel, { color: palette.textSecondary }]}>{t('total')}</Text>
-            </View>
-          </View>
-          <View style={[styles.statCard, { backgroundColor: palette.background, borderColor: palette.border, borderWidth: 1 }]}>
-            <View style={[styles.statIcon, { backgroundColor: isDark ? '#312e81' : '#EEF2FF' }]}>
-              <Ionicons name="sync" size={24} color="#8B5CF6" />
-            </View>
-            <View style={styles.statInfo}>
-              <Text style={[styles.statValue, { color: palette.text }]}>{inProgressCount}</Text>
-              <Text style={[styles.statLabel, { color: palette.textSecondary }]}>{t('inProgress')}</Text>
-            </View>
-          </View>
-          <View style={[styles.statCard, { backgroundColor: palette.background, borderColor: palette.border, borderWidth: 1 }]}>
-            <View style={[styles.statIcon, { backgroundColor: isDark ? '#064e3b' : '#F0FDF4' }]}>
-              <Ionicons name="checkmark-circle" size={24} color="#10B981" />
-            </View>
-            <View style={styles.statInfo}>
-              <Text style={[styles.statValue, { color: palette.text }]}>{completedCount}</Text>
-              <Text style={[styles.statLabel, { color: palette.textSecondary }]}>{t('completed')}</Text>
-            </View>
-          </View>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => router.push('/(tabs)/dashboard' as never)}
+          >
+            <LinearGradient
+              colors={isDark ? ['#6366F120', '#0F172A'] : ['#EEF2FF', '#E0E7FF']}
+              style={[styles.statCardFull, { borderColor: isDark ? '#6366F140' : '#A5B4FC', borderWidth: 1 }]}
+            >
+              <View style={[styles.statIconFull, { backgroundColor: isDark ? '#6366F130' : '#C7D2FE' }]}>
+                <Ionicons name="layers" size={26} color="#6366F1" />
+              </View>
+              <View style={styles.statInfoFull}>
+                <Text style={[styles.statValueLarge, { color: '#6366F1' }]}>{todayStats.total}</Text>
+                <Text style={[styles.statLabelLarge, { color: '#6366F1' }]}>Cards Started Today</Text>
+              </View>
+              <View style={[styles.bannerArrow, { backgroundColor: isDark ? '#6366F130' : '#C7D2FE' }]}>
+                <Ionicons name="chevron-forward" size={18} color="#6366F1" />
+              </View>
+            </LinearGradient>
+          </TouchableOpacity>
         </AnimatedReanimated.View>
 
-        {/* Quick Actions */}
+        {/* 3-column Stats Row */}
         <AnimatedReanimated.View
-          entering={FadeInDown.duration(800).delay(400)}
-          style={styles.section}
+          entering={FadeInDown.duration(800).delay(300)}
+          style={styles.statsGridWrap}
         >
-          <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('quickActions')}</Text>
-          <View style={[styles.actionsRow, { backgroundColor: palette.background }]}>
+          <LinearGradient
+            colors={isDark ? ['#6366F120', '#0F172A'] : ['#EEF2FF', '#E0E7FF']}
+            style={[styles.statCardGrid, { borderColor: isDark ? '#6366F140' : '#A5B4FC', borderWidth: 1 }]}
+          >
+            <View style={[styles.statIcon, { backgroundColor: isDark ? '#6366F130' : '#C7D2FE' }]}>
+              <Ionicons name="sync" size={20} color="#6366F1" />
+            </View>
+            <View style={styles.statInfo}>
+              <Text style={[styles.statValue, { color: '#6366F1' }]}>{todayStats.inProgress}</Text>
+              <Text style={[styles.statLabel, { color: '#6366F1' }]}>{t('inProgress')}</Text>
+            </View>
+          </LinearGradient>
+          
+          <LinearGradient
+            colors={isDark ? ['#0D948820', '#0F172A'] : ['#F0FDFA', '#CCFBF1']}
+            style={[styles.statCardGrid, { borderColor: isDark ? '#0D948840' : '#5EEAD4', borderWidth: 1 }]}
+          >
+            <View style={[styles.statIcon, { backgroundColor: isDark ? '#0D948830' : '#99F6E4' }]}>
+              <Ionicons name="checkmark-circle" size={20} color="#0D9488" />
+            </View>
+            <View style={styles.statInfo}>
+              <Text style={[styles.statValue, { color: '#0D9488' }]}>{todayStats.completed}</Text>
+              <Text style={[styles.statLabel, { color: '#0D9488' }]}>Completed</Text>
+            </View>
+          </LinearGradient>
 
-
-            {(user?.role === 'supervisor' || user?.role === 'admin') && (
-              <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/activity-feed' as never)} activeOpacity={0.8}>
-                <AnimatedIcon index={1}>
-                  <LinearGradient
-                    colors={isDark ? ['#059669', '#065f46'] : ['#D1FAE5', '#A7F3D0']}
-                    style={styles.actionIcon}
-                  >
-                    <Ionicons name="list" size={24} color="#10B981" />
-                  </LinearGradient>
-                </AnimatedIcon>
-                <Text style={[styles.actionLabel, { color: palette.textSecondary }]} numberOfLines={2} adjustsFontSizeToFit>{t('activity')}</Text>
-              </TouchableOpacity>
-            )}
-            {(user?.role === 'supervisor' || user?.role === 'admin') && (
-              <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/stuck-cards' as any)} activeOpacity={0.8}>
-                <AnimatedIcon index={2}>
-                  <LinearGradient
-                    colors={isDark ? ['#7f1d1d', '#450a0a'] : ['#FEE2E2', '#FECACA']}
-                    style={styles.actionIcon}
-                  >
-                    <Ionicons name="warning" size={24} color="#EF4444" />
-                  </LinearGradient>
-                </AnimatedIcon>
-                <Text style={[styles.actionLabel, { color: palette.textSecondary }]} numberOfLines={2} adjustsFontSizeToFit>{t('manageStuckCards') || 'Stuck Cards'}</Text>
-              </TouchableOpacity>
-            )}
-          </View>
+          <LinearGradient
+            colors={isDark ? ['#47556920', '#0F172A'] : ['#F1F5F9', '#E2E8F0']}
+            style={[styles.statCardGrid, { borderColor: isDark ? '#47556940' : '#94A3B8', borderWidth: 1 }]}
+          >
+            <View style={[styles.statIcon, { backgroundColor: isDark ? '#47556930' : '#CBD5E1' }]}>
+              <Ionicons name="ban-outline" size={20} color="#475569" />
+            </View>
+            <View style={styles.statInfo}>
+              <Text style={[styles.statValue, { color: '#475569' }]}>{todayStats.blocked}</Text>
+              <Text style={[styles.statLabel, { color: '#475569' }]}>Cards Lost</Text>
+            </View>
+          </LinearGradient>
         </AnimatedReanimated.View>
 
-        {/* System Status Banner */}
-        <TouchableOpacity
-          style={[styles.statusBanner, { backgroundColor: isDark ? '#064e3b' : '#F0FDF4', borderColor: isDark ? '#065f46' : '#D1FAE5' }]}
-          onPress={() => router.push('/system-status')}
-          activeOpacity={0.8}
-        >
-          <View style={styles.statusDot} />
-          <View style={styles.statusBannerText}>
-            <Text style={[styles.statusBannerTitle, { color: palette.text }]}>{t('operationalBanner')}</Text>
-            <Text style={[styles.statusBannerSub, { color: palette.textSecondary }]}>{t('operationalSub')}</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color={palette.textSecondary} />
-        </TouchableOpacity>
+
+
+        {/* Inspection Priority Banner */}
+        {pendingInspectionsCount > 0 ? (
+          <AnimatedReanimated.View
+            entering={FadeInDown.duration(800).delay(400)}
+            style={styles.statsBannerWrap}
+          >
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={() => router.push('/(tabs)/losses')}
+            >
+              <LinearGradient
+                colors={isDark ? ['#F59E0B15', '#0F172A'] : ['#FFFBEB', '#FEF3C7']}
+                style={[styles.statCardFull, { borderColor: isDark ? '#F59E0B30' : '#FDE68A', borderWidth: 1 }]}
+              >
+                <View style={[styles.statIconFull, { backgroundColor: isDark ? '#F59E0B20' : '#FDE68A' }]}>
+                  <Ionicons name="search-outline" size={26} color="#D97706" />
+                </View>
+                <View style={styles.statInfoFull}>
+                  <Text style={[styles.statValueLarge, { color: '#D97706' }]}>{pendingInspectionsCount}</Text>
+                  <Text style={[styles.statLabelLarge, { color: '#D97706' }]}>
+                    {pendingInspectionsCount === 1 ? 'Loss Pending Inspection' : 'Losses Pending Inspection'}
+                  </Text>
+                </View>
+                <View style={[styles.bannerArrow, { backgroundColor: isDark ? '#F59E0B20' : '#FDE68A' }]}>
+                  <Ionicons name="chevron-forward" size={18} color="#D97706" />
+                </View>
+              </LinearGradient>
+            </TouchableOpacity>
+          </AnimatedReanimated.View>
+        ) : null}
 
         {/* Recent Cards */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('recentCards')}</Text>
-            <TouchableOpacity onPress={() => router.push('/(tabs)/history')}>
-              <Text style={[styles.sectionAction, { color: palette.primary }]}>{t('viewAll')}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <View style={[styles.sectionIcon, { backgroundColor: palette.primary + '20' }]}>
+                <Ionicons name="documents-outline" size={16} color={palette.primary} />
+              </View>
+              <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('recentCards')}</Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.viewAllBtn, { backgroundColor: palette.primary + '12' }]}
+              onPress={() => router.push('/(tabs)/history')}
+            >
+              <Text style={[styles.viewAllText, { color: palette.primary }]}>{t('viewAll')}</Text>
+              <Ionicons name="arrow-forward" size={14} color={palette.primary} />
             </TouchableOpacity>
           </View>
           {cards?.slice(0, 5).map(card => (
@@ -437,9 +646,7 @@ export default function HomeScreen() {
               key={card.id}
               card={card}
               onPress={() => router.push(`/card/${card.cardId}`)}
-              onDelete={() => handleDelete(card.id)}
               palette={palette}
-              primaryColor={palette.primary}
             />
           ))}
           {!cards?.length && !cardsLoading && (
@@ -451,36 +658,7 @@ export default function HomeScreen() {
           )}
         </View>
 
-        {/* Delayed Cards */}
-        {delayedCards.length > 0 && (
-          <View style={[styles.section, { marginBottom: spacing.xl }]}>
-            <View style={styles.sectionHeader}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Ionicons name="warning" size={20} color="#EF4444" />
-                <Text style={[styles.sectionTitle, { color: palette.text }]}>{t('actionRequired')}</Text>
-              </View>
-            </View>
-            <Text style={[styles.sectionSubtitle, { color: palette.textSecondary, marginBottom: spacing.md }]}>
-              {t('stuckFor')} {stuckThreshold}h
-            </Text>
-            {delayedCards.map(card => {
-              const hoursStuck = Math.max(1, Math.floor(getActiveElapsedMs(card.stageEnteredAt || card.updatedAt, 8, 16) / (1000 * 60 * 60)));
-              return (
-                <View key={card.id} style={{ position: 'relative' }}>
-                  <CardListItem
-                    card={card}
-                    onPress={() => router.push(`/card/${card.cardId}`)}
-                    onDelete={() => handleDelete(card.id)}
-                    palette={palette}
-                  />
-                  <View style={[styles.stuckBadge, { backgroundColor: '#FEE2E2', borderColor: '#EF4444' }]}>
-                    <Text style={[styles.stuckBadgeText, { color: '#DC2626' }]}>{t('stuckBadge')} {hoursStuck}h</Text>
-                  </View>
-                </View>
-              );
-            })}
-          </View>
-        )}
+
       </Animated.ScrollView>
       <SearchModal visible={searchOpen} onClose={() => setSearchOpen(false)} />
 
@@ -501,29 +679,70 @@ export default function HomeScreen() {
             </View>
 
             <View style={styles.sheetContent}>
-              {/* NEW FEATURES */}
+              {/* MAIN MENU */}
+              <TouchableOpacity
+                style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
+                onPress={() => {
+                  setMainMenuVisible(false);
+                  router.push('/configuration');
+                }}
+              >
+                <View style={[styles.sheetActionIcon, { backgroundColor: '#E0F2FE' }]}>
+                  <Ionicons name="construct" size={20} color="#0284C7" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('Configuration') || 'Configuration'}</Text>
+                  <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>Manage expected cards, machines & GPIOs</Text>
+                </View>
+              </TouchableOpacity>
 
+              <TouchableOpacity
+                style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
+                onPress={() => {
+                  setMainMenuVisible(false);
+                  router.push('/(tabs)/sensors');
+                }}
+              >
+                <View style={[styles.sheetActionIcon, { backgroundColor: '#D1FAE5' }]}>
+                  <Ionicons name="pulse" size={20} color="#10B981" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('Sensor Status') || 'Sensor Status'}</Text>
+                  <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>Real-time sensor telemetry & GPIO pins</Text>
+                </View>
+              </TouchableOpacity>
 
-              {user?.role === 'admin' && (
-                <TouchableOpacity
-                  style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
-                  onPress={() => {
-                    setMainMenuVisible(false);
-                    router.push('/system-status' as any);
-                  }}
-                >
-                  <View style={[styles.sheetActionIcon, { backgroundColor: '#FEE2E2' }]}>
-                    <Ionicons name="build" size={20} color="#DC2626" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('maintenanceCenter') || 'Maintenance Center'}</Text>
-                    <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>{t('maintenanceCenterDesc') || 'Hardware health & diagnostics'}</Text>
-                  </View>
-                  <View style={styles.newBadge}><Text style={styles.newBadgeText}>NEW</Text></View>
-                </TouchableOpacity>
-              )}
+              <TouchableOpacity
+                style={[styles.sheetActionBtn, { borderBottomColor: palette.border, opacity: uploading ? 0.5 : 1 }]}
+                onPress={handleReportIssue}
+                disabled={uploading}
+              >
+                <View style={[styles.sheetActionIcon, { backgroundColor: '#FCE7F3' }]}>
+                  <Ionicons name={uploading ? "hourglass" : "camera"} size={20} color="#DB2777" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.sheetActionText, { color: palette.text }]}>Report Issue</Text>
+                  <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>
+                    {uploading ? 'Uploading...' : 'Take a photo of a problem & upload'}
+                  </Text>
+                </View>
+              </TouchableOpacity>
 
-
+              <TouchableOpacity
+                style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
+                onPress={() => {
+                  setMainMenuVisible(false);
+                  router.push('/(tabs)/statistics');
+                }}
+              >
+                <View style={[styles.sheetActionIcon, { backgroundColor: '#FEF3C7' }]}>
+                  <Ionicons name="bar-chart" size={20} color="#D97706" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('Statistics') || 'Statistics'}</Text>
+                  <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>OOE & OEE — daily performance & losses</Text>
+                </View>
+              </TouchableOpacity>
 
               <TouchableOpacity
                 style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
@@ -532,65 +751,52 @@ export default function HomeScreen() {
                   router.push('/(tabs)/history');
                 }}
               >
-                <View style={[styles.sheetActionIcon, { backgroundColor: '#FEE2E2' }]}>
-                  <Ionicons name="time" size={20} color="#DC2626" />
+                <View style={[styles.sheetActionIcon, { backgroundColor: '#F3E8FF' }]}>
+                  <Ionicons name="file-tray-full" size={20} color="#7C3AED" />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('history') || 'Scan History'}</Text>
-                  <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>{t('historyDesc') || 'Review past card scans'}</Text>
+                  <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('Data') || 'Data'}</Text>
+                  <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>Browse scan logs & history records</Text>
                 </View>
               </TouchableOpacity>
 
-              {/* STANDARD TOOLS */}
               <TouchableOpacity
                 style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
                 onPress={() => {
                   setMainMenuVisible(false);
-                  router.push('/daily-report');
+                  router.push('/(tabs)/reports');
                 }}
               >
-                <View style={[styles.sheetActionIcon, { backgroundColor: '#E0F2FE' }]}>
-                  <Ionicons name="document-text" size={20} color="#0284C7" />
+                <View style={[styles.sheetActionIcon, { backgroundColor: '#DBEAFE' }]}>
+                  <Ionicons name="document-text" size={20} color="#2563EB" />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('dailyReport') || 'Daily Report'}</Text>
-                  <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>{t('dailyReportDesc') || 'Download Excel report'}</Text>
+                  <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('reports') || 'Reports'}</Text>
+                  <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>Daily reports with OEE & losses</Text>
                 </View>
               </TouchableOpacity>
 
-              {(user?.role === 'supervisor' || user?.role === 'admin') && (
-                <TouchableOpacity
-                  style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
-                  onPress={() => {
-                    setMainMenuVisible(false);
-                    router.push('/export');
-                  }}
-                >
-                  <View style={[styles.sheetActionIcon, { backgroundColor: '#D1FAE5' }]}>
-                    <Ionicons name="download" size={20} color="#10B981" />
-                  </View>
-                  <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('exportCenter') || 'Export Center'}</Text>
-                  <Ionicons name="chevron-forward" size={18} color={palette.textTertiary} style={{ marginLeft: 'auto' }} />
-                </TouchableOpacity>
-              )}
-
               <TouchableOpacity
-                style={[styles.sheetActionBtn, { borderBottomWidth: 0 }]}
+                style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
                 onPress={() => {
                   setMainMenuVisible(false);
                   router.push('/(tabs)/settings');
                 }}
               >
                 <View style={[styles.sheetActionIcon, { backgroundColor: '#F3F4F6' }]}>
-                  <Ionicons name="settings" size={20} color="#4B5563" />
+                  <Ionicons name="options" size={20} color="#4B5563" />
                 </View>
-                <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('preferences')}</Text>
-                <Ionicons name="chevron-forward" size={18} color={palette.textTertiary} style={{ marginLeft: 'auto' }} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('settings') || 'Settings'}</Text>
+                  <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>Adjust threshold values & language settings</Text>
+                </View>
               </TouchableOpacity>
             </View>
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
+
+
     </SafeAreaView>
   );
 }
@@ -603,45 +809,56 @@ const styles = StyleSheet.create({
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
     borderBottomWidth: 0,
+    ...shadows.sm,
+    zIndex: 10,
   },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   searchBtn: { padding: 6 },
+  notifBtn: { padding: 6, position: 'relative' },
   menuBtn: { padding: 4 },
   greeting: { ...typography.small },
   userName: { ...typography.bodyBold },
-  roleBadge: { paddingHorizontal: spacing.sm, paddingVertical: 4, borderRadius: borderRadius.full },
-  roleText: { ...typography.tiny, fontWeight: '700' },
   avatarBtn: {},
   avatar: {
     width: 36, height: 36, borderRadius: 18,
     alignItems: 'center', justifyContent: 'center',
+    borderWidth: 2, borderColor: 'rgba(255,255,255,0.2)',
   },
   avatarText: { ...typography.captionBold, color: colors.white },
-  avatarImg: { width: '100%', height: '100%' },
-  statsRow: {
-    flexDirection: 'row', gap: spacing.sm,
-    paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
-  },
-  statCard: {
-    flex: 1, padding: spacing.sm, borderRadius: borderRadius.xl,
-    flexDirection: 'column', alignItems: 'center', gap: 6,
-    ...shadows.xs,
-  },
-  statIcon: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  statInfo: { alignItems: 'center' },
-  statValue: { ...typography.bodyBold, fontSize: 16, textAlign: 'center' },
-  statLabel: { ...typography.tiny, fontWeight: '700', textTransform: 'uppercase', textAlign: 'center', fontSize: 9 },
+  avatarImg: { width: '100%', height: '100%', borderRadius: 18 },
+  statIcon: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  statInfo: { alignItems: 'center', gap: 2 },
+  statValue: { ...typography.bodyBold, fontSize: 20, textAlign: 'center' },
+  statLabel: { ...typography.tiny, fontWeight: '800', textTransform: 'uppercase', textAlign: 'center', fontSize: 9, letterSpacing: 0.8 },
+  bannerArrow: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   section: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md },
-  sectionTitle: { ...typography.h4 },
-  sectionAction: { ...typography.caption },
-  actionsRow: {
-    flexDirection: 'row', gap: spacing.sm,
-    borderRadius: borderRadius.xl,
-    padding: spacing.md, ...shadows.sm,
+  sectionTitle: { ...typography.h4, fontSize: 18 },
+  sectionIcon: { width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  viewAllBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: borderRadius.full,
   },
-  actionBtn: { flex: 1, alignItems: 'center', gap: spacing.xs },
+  viewAllText: { ...typography.small, fontWeight: '600' },
+  menuGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: borderRadius.xl,
+    justifyContent: 'space-between',
+  },
+  menuItemBtn: {
+    width: '48%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.md,
+    borderRadius: borderRadius.xl,
+    borderWidth: 1,
+    ...shadows.sm,
+  },
   actionIcon: {
     width: 52, height: 52, borderRadius: borderRadius.xl,
     alignItems: 'center', justifyContent: 'center',
@@ -659,31 +876,6 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
   },
   bellBadgeText: { color: colors.white, fontSize: 10, fontWeight: '800' },
-  stuckBadge: {
-    position: 'absolute', top: -6, right: -6,
-    paddingHorizontal: 8, paddingVertical: 2,
-    borderRadius: borderRadius.full, borderWidth: 1,
-  },
-  stuckBadgeText: { ...typography.tiny, fontWeight: 'bold' },
-  statusBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
-    marginHorizontal: spacing.lg, marginTop: spacing.md,
-    borderRadius: borderRadius.lg,
-    padding: spacing.md, borderWidth: 1,
-  },
-  statusDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#10B981' },
-  statusBannerText: { flex: 1 },
-  statusBannerTitle: { ...typography.captionBold },
-  statusBannerSub: { ...typography.small },
-  cardMoreBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    marginLeft: spacing.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FEE2E2',
-  },
   modalOverlay: {
     flex: 1, backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'flex-end',
@@ -714,9 +906,9 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.xl,
     overflow: 'hidden',
     borderWidth: 1,
-    minHeight: 88,
-    marginBottom: spacing.sm,
-    ...shadows.sm,
+    minHeight: 84,
+    marginBottom: spacing.md,
+    ...shadows.md,
   },
   cardItemInner: {
     flexDirection: 'row',
@@ -725,9 +917,9 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   cardIconBox: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
+    width: 46,
+    height: 46,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -744,20 +936,21 @@ const styles = StyleSheet.create({
   },
   cardIdText: {
     ...typography.bodyBold,
-    fontSize: 17,
+    fontSize: 18,
     flex: 1,
   },
   stageBadge: {
     paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
+    paddingVertical: 3,
+    borderRadius: 8,
     borderWidth: 1,
-    maxWidth: 120,
+    maxWidth: 130,
   },
   stageBadgeText: {
     ...typography.tiny,
-    fontWeight: '700',
+    fontWeight: '800',
     textTransform: 'uppercase',
+    letterSpacing: 0.3,
   },
   cardTimeText: {
     ...typography.small,
@@ -781,5 +974,52 @@ const styles = StyleSheet.create({
     ...typography.tiny,
     fontWeight: '700',
     fontSize: 9,
+  },
+  statsBannerWrap: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+  },
+  statCardFull: {
+    padding: spacing.md,
+    borderRadius: borderRadius.xl,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    ...shadows.xs,
+  },
+  statIconFull: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statInfoFull: {
+    flex: 1,
+  },
+  statValueLarge: {
+    ...typography.h2,
+    fontWeight: '800',
+  },
+  statLabelLarge: {
+    ...typography.captionBold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  statsGridWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+  },
+  statCardGrid: {
+    flex: 1,
+    padding: spacing.sm,
+    borderRadius: borderRadius.xl,
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 6,
+    ...shadows.xs,
   },
 });

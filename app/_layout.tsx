@@ -93,8 +93,7 @@ function RootNavigator() {
         name="stuck-cards"
         options={{
           presentation: 'modal',
-          headerShown: true,
-          headerTitle: t('stuckCards'), // ✅ Fixed
+          headerShown: false,
         }}
       />
       
@@ -102,8 +101,7 @@ function RootNavigator() {
         name="notifications"
         options={{
           presentation: 'modal',
-          headerShown: true,
-          headerTitle: t('notifications'),
+          headerShown: false,
         }}
       />
       
@@ -133,6 +131,12 @@ function RootNavigator() {
           headerTitle: t('userManagement'), // ✅ Fixed
           headerStyle: { backgroundColor: palette.primary },
           headerTintColor: '#fff',
+        }}
+      />
+      <Stack.Screen
+        name="issues"
+        options={{
+          headerShown: false,
         }}
       />
     </Stack>

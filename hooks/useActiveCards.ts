@@ -1,4 +1,5 @@
 import { getSupabaseClient } from '@/lib/supabase';
+import { getTodayBounds } from '@/lib/dates';
 import { useCallback, useEffect, useState } from 'react';
 
 export interface ActiveCard {
@@ -17,6 +18,9 @@ export function useActiveCards() {
     inProgress: 0,
     completed: 0,
     blocked: 0,
+    pending: 0,
+    cancelled: 0,
+    removed: 0,
     todayTotal: 0,
   });
   const [loading, setLoading] = useState(true);
@@ -29,28 +33,31 @@ export function useActiveCards() {
     }
 
     try {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const { start, end } = getTodayBounds();
 
       const { data, error } = await supabase
         .from('electronic_cards')
-        .select('id, card_id, current_machine, status, stage_entered_at, created_at')
-        .gte('created_at', today.toISOString())
+        .select('id, card_id, current_machine, status, updated_at, stage_entered_at, created_at')
+        .gte('created_at', start.toISOString())
+        .lt('created_at', end.toISOString())
+        .not('card_id', 'like', 'TEST-%')
         .order('created_at', { ascending: false })
         .limit(50);
 
       if (error) throw error;
 
-      const now = Date.now();
       const activeCards: ActiveCard[] = [];
       let completed = 0;
       let blocked = 0;
+      let pending = 0;
+      let cancelled = 0;
+      let removed = 0;
 
       data?.forEach((card) => {
-        if (card.card_id?.startsWith('TEST-')) return;
-
-        const duration = card.stage_entered_at
-          ? Math.floor((now - new Date(card.stage_entered_at).getTime()) / 60000)
+        // BUG 3 FIX: Compute duration from updated_at (reflects last activity, not stage entry)
+        const enteredAt = card.updated_at || card.stage_entered_at || card.created_at;
+        const durationMinutes = enteredAt
+          ? Math.floor((Date.now() - new Date(enteredAt).getTime()) / 60000)
           : 0;
 
         if (card.status === 'in_progress') {
@@ -60,13 +67,19 @@ export function useActiveCards() {
             stage: card.current_machine || 'Unknown',
             machine: card.current_machine || 'Unknown',
             status: card.status,
-            enteredAt: card.stage_entered_at || card.created_at,
-            durationMinutes: duration,
+            enteredAt: enteredAt,
+            durationMinutes: Math.max(0, durationMinutes),
           });
         } else if (card.status === 'completed') {
           completed++;
         } else if (card.status === 'blocked' || card.status === 'on_hold') {
           blocked++;
+        } else if (card.status === 'pending') {
+          pending++;
+        } else if (card.status === 'cancelled') {
+          cancelled++;
+        } else if (card.status === 'removed') {
+          removed++;
         }
       });
 
@@ -75,6 +88,9 @@ export function useActiveCards() {
         inProgress: activeCards.length,
         completed,
         blocked,
+        pending,
+        cancelled,
+        removed,
         todayTotal: data?.length || 0,
       });
     } catch (err) {
@@ -92,7 +108,7 @@ export function useActiveCards() {
     }
 
     fetchCards();
-    const interval = setInterval(fetchCards, 5000);
+    const interval = setInterval(fetchCards, 30000);
 
     const channel = supabase
       .channel('cards_rt')

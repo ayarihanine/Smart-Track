@@ -1,20 +1,55 @@
 const { createClient } = require('@supabase/supabase-js');
+const dotenv = require('dotenv');
+const path = require('path');
+dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 
-const SUPABASE_URL = 'https://gtjjxfwlixcrfniwvnzu.supabase.co';
-const SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd0amp4ZndsaXhjcmZuaXd2bnp1Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTg3MzkwNSwiZXhwIjoyMDg3NDQ5OTA1fQ.jqYF3PW0qGmhwzrNW1DidOH8aABt_5vU0_wXKinZT9g';
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
+const SERVICE_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
 
 const supabase = createClient(SUPABASE_URL, SERVICE_KEY, {
   auth: { autoRefreshToken: false, persistSession: false }
 });
 
 async function run() {
-  const { data, error } = await supabase.from('electronic_cards').select('*').limit(1);
-  if (error) {
-    console.error('Error fetching card:', error);
-  } else {
-    console.log('Columns:', data && data.length > 0 ? Object.keys(data[0]) : 'No data in table');
-    console.log('Sample Row:', data && data.length > 0 ? data[0] : 'None');
+  console.log('--- DB INSPECTION START ---');
+  
+  const tables = [
+    'sensor_data',
+    'losses',
+    'production_performance',
+    'daily_losses',
+    'scan_events',
+    'etat_capteur',
+    'pertes_table',
+    'production_batches',
+    'issues',
+    'production_par_jour',
+    'configuration',
+    'electronic_cards',
+    'alerts',
+    'articles'
+  ];
+
+  for (const table of tables) {
+    const { data, error } = await supabase.from(table).select('*').limit(20);
+    if (error) {
+      console.log(`Table '${table}': ERROR:`, error.message);
+    } else {
+      console.log(`Table '${table}': EXISTS, count=${data ? data.length : 0}, Columns:`, data && data.length > 0 ? Object.keys(data[0]) : '(empty table)');
+      if (data && data.length > 0) {
+        console.log(`Table '${table}' Sample:`, data[0]);
+        if (table === 'pertes_table') {
+          console.log('ALL pertes_table rows:', data);
+        }
+        if (table === 'scan_events') {
+          console.log('scan_events count:', data.length);
+          console.log('ALL scan_events rows:', data);
+        }
+      }
+    }
   }
+
+  console.log('--- DB INSPECTION END ---');
 }
 
 run();

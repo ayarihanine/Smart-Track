@@ -6,10 +6,11 @@ import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
 import { getSupabaseClient } from '@/lib/supabase';
 import { getTodayLossesSummary } from '@/lib/api';
+import { getTodayDateString } from '@/lib/dates';
 
 export default function TabLayout() {
   const { t } = useTranslation();
-  const { palette } = useTheme();
+  const { palette, isDark } = useTheme();
   const [lossesCount, setLossesCount] = useState(0);
 
   useEffect(() => {
@@ -29,16 +30,9 @@ export default function TabLayout() {
 
     const channel = supabase
       .channel('losses-tab-badge')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'production_losses' }, (payload: any) => {
-        const row = payload.new as any;
-        const dateValue = row?.loss_date || row?.timestamp;
-        if (!dateValue) return;
-
-        const date = new Date(dateValue);
-        const today = new Date();
-        if (date.toDateString() !== today.toDateString()) return;
-
-        setLossesCount((current) => current + Number(row?.quantity ?? 0));
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'electronic_cards' }, () => {
+        // Refetch on any electronic_cards change (status updates, new cards)
+        loadCount();
       })
       .subscribe();
 
@@ -60,25 +54,27 @@ export default function TabLayout() {
         tabBarActiveTintColor: palette.primary,
         tabBarInactiveTintColor: palette.textSecondary,
         tabBarStyle: {
-          backgroundColor: palette.background,
+          backgroundColor: isDark ? '#0F172A' : '#FFFFFF',
           borderTopWidth: 0,
-          height: Platform.OS === 'ios' ? 84 : 70,
-          paddingBottom: Platform.OS === 'ios' ? 22 : 10,
+          height: Platform.OS === 'ios' ? 88 : 72,
+          paddingBottom: Platform.OS === 'ios' ? 24 : 12,
           paddingTop: 10,
-          marginHorizontal: 14,
-          marginBottom: Platform.OS === 'ios' ? 10 : 8,
-          borderRadius: 18,
+          marginHorizontal: 12,
+          marginBottom: Platform.OS === 'ios' ? 12 : 10,
+          borderRadius: 22,
           position: 'absolute',
-          shadowColor: '#000000',
-          shadowOpacity: 0.08,
-          shadowRadius: 14,
-          shadowOffset: { width: 0, height: 6 },
-          elevation: 8,
+          shadowColor: palette.primary,
+          shadowOpacity: 0.12,
+          shadowRadius: 20,
+          shadowOffset: { width: 0, height: 8 },
+          elevation: 12,
+          borderWidth: isDark ? 1 : 0,
+          borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'transparent',
         },
-        tabBarLabelStyle: { fontSize: 11, fontWeight: '700' },
-        tabBarItemStyle: { paddingTop: 2 },
+        tabBarLabelStyle: { fontSize: 10, fontWeight: '700', letterSpacing: 0.2 },
+        tabBarItemStyle: { paddingTop: 4 },
         sceneStyle: {
-          paddingBottom: Platform.OS === 'ios' ? 96 : 88,
+          paddingBottom: Platform.OS === 'ios' ? 100 : 90,
         },
         headerShown: false,
       }}
@@ -124,6 +120,13 @@ export default function TabLayout() {
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="scan" size={size} color={color} />
           ),
+        }}
+      />
+      <Tabs.Screen
+        name="reports"
+        options={{
+          href: null,
+          title: t('reports'),
         }}
       />
       <Tabs.Screen

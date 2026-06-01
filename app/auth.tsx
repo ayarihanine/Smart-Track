@@ -25,7 +25,6 @@ export default function AuthScreen() {
   const ROLES: { value: UserRole; label: string; icon: string; color: string }[] = useMemo(() => [
     { value: 'operator', label: t('operator'), icon: 'construct', color: '#10B981' },
     { value: 'supervisor', label: t('supervisor'), icon: 'eye', color: '#2563EB' },
-    { value: 'admin', label: t('admin'), icon: 'shield', color: '#8B5CF6' },
   ], [t]);
 
   async function handleSubmit() {
@@ -40,14 +39,22 @@ export default function AuthScreen() {
     try {
       if (mode === 'login') {
         await signIn(finalEmail, password);
+        router.replace('/(tabs)');
       } else {
         if (!displayName) {
           Alert.alert(t('error'), t('enterDisplayName'));
           return;
         }
-        await signUp(finalEmail, password, displayName, role);
+        const { requiresConfirmation } = await signUp(finalEmail, password, displayName, role);
+        if (requiresConfirmation) {
+          Alert.alert(
+            'Check your email',
+            'Account created! Please confirm your email before signing in. Check your inbox (or spam).'
+          );
+        } else {
+          router.replace('/(tabs)');
+        }
       }
-      router.replace('/(tabs)');
     } catch (e: any) {
       Alert.alert(t('authError'), e.message || t('authFailed'));
     }
@@ -90,24 +97,6 @@ export default function AuthScreen() {
             {mode === 'signup' && (
               <>
                 <View style={styles.inputGroup}>
-                  <Text style={styles.label}>{t('selectRole')}</Text>
-                  <View style={styles.roleRow}>
-                    {ROLES.map(r => (
-                      <TouchableOpacity
-                        key={r.value}
-                        style={[styles.roleBtn, role === r.value && { backgroundColor: r.color, borderColor: r.color }]}
-                        onPress={() => setRole(r.value)}
-                      >
-                        <Ionicons name={r.icon as any} size={18} color={role === r.value ? colors.white : colors.textSecondary} />
-                        <Text style={[styles.roleBtnText, role === r.value && { color: colors.white }]}>
-                          {r.label}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </View>
-
-                <View style={styles.inputGroup}>
                   <Text style={styles.label}>{t('fullName')}</Text>
                   <View style={styles.inputRow}>
                     <Ionicons name="person-outline" size={20} color={colors.textSecondary} style={styles.inputIcon} />
@@ -133,11 +122,11 @@ export default function AuthScreen() {
                       autoCapitalize="none"
                     />
                     <View style={styles.domainBadge}>
-                      <Text style={styles.domainText}>@{role}.com</Text>
+                      <Text style={styles.domainText}>@operator.com</Text>
                     </View>
                   </View>
                   <Text style={styles.generatedEmail}>
-                    {username.toLowerCase() || '...'}@{role}.com
+                    {username.toLowerCase() || '...'}@operator.com
                   </Text>
                 </View>
               </>
@@ -194,18 +183,6 @@ export default function AuthScreen() {
               )}
             </TouchableOpacity>
 
-            {/* Demo hint */}
-            <TouchableOpacity
-              style={styles.demoHint}
-              onPress={() => {
-                setEmail('demo@smarttrack.com');
-                setPassword('demo1234');
-                setMode('login');
-              }}
-            >
-              <Ionicons name="information-circle-outline" size={16} color={colors.primary} />
-              <Text style={styles.demoHintText}>{t('demoHint')}</Text>
-            </TouchableOpacity>
           </View>
 
           <Text style={styles.footer}>{t('authFooter')}</Text>
@@ -274,10 +251,5 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm, ...shadows.md,
   },
   submitBtnText: { ...typography.bodyBold, color: colors.white },
-  demoHint: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: spacing.xs, marginTop: spacing.md,
-  },
-  demoHintText: { ...typography.small, color: colors.primary },
   footer: { ...typography.small, color: colors.textTertiary, textAlign: 'center', marginTop: spacing.xl },
 });

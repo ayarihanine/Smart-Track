@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Modal } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Modal, TextInput, Platform, KeyboardAvoidingView } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
 import { getSupabaseClient } from '@/lib/supabase';
-import { UserProfile } from '@/types';
+import { UserProfile, UserRole } from '@/types';
 import { useRoleGuard } from '@/hooks/useRoleGuard';
+import { createClient } from '@supabase/supabase-js';
 
 type SortOption = 'name' | 'role' | 'newest';
 const ROLE_ORDER: Record<string, number> = { admin: 0, supervisor: 1, operator: 2 };
@@ -19,6 +20,14 @@ export default function AdminPanelScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>('newest');
+
+  // User Provisioning State
+  const [isCreateModalVisible, setIsCreateModalVisible] = useState(false);
+  const [createRole, setCreateRole] = useState<UserRole>('operator');
+  const [createDisplayName, setCreateDisplayName] = useState('');
+  const [createUsername, setCreateUsername] = useState('');
+  const [createPassword, setCreatePassword] = useState('');
+  const [isCreatingUser, setIsCreatingUser] = useState(false);
 
   useEffect(() => {
     fetchUsers();
@@ -94,6 +103,67 @@ export default function AdminPanelScreen() {
   const closeMenu = () => {
     setIsMenuVisible(false);
     setTimeout(() => setActiveUser(null), 300);
+  };
+
+  const openCreateModal = (role: UserRole) => {
+    setCreateRole(role);
+    setCreateDisplayName('');
+    setCreateUsername('');
+    setCreatePassword('');
+    setIsCreateModalVisible(true);
+  };
+
+  const handleCreateUser = async () => {
+    if (!createDisplayName.trim() || !createUsername.trim() || !createPassword) {
+      Alert.alert('Error', 'Please fill in all fields.');
+      return;
+    }
+
+    try {
+      setIsCreatingUser(true);
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
+      const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
+
+      if (!supabaseUrl || !supabaseAnonKey) {
+        throw new Error('Supabase configuration is missing in environment variables.');
+      }
+
+      // Create a temporary client that does NOT persist the session
+      const tempClient = createClient(supabaseUrl, supabaseAnonKey, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false
+        }
+      });
+
+      const generatedEmail = `${createUsername.toLowerCase().trim()}@${createRole}.smarttrack.com`;
+
+      const { data, error: signupError } = await tempClient.auth.signUp({
+        email: generatedEmail,
+        password: createPassword,
+        options: {
+          data: {
+            displayName: createDisplayName.trim(),
+            role: createRole,
+          }
+        }
+      });
+
+      if (signupError) throw signupError;
+
+      Alert.alert(
+        'Success',
+        `User "${createDisplayName.trim()}" successfully registered as ${createRole.toUpperCase()}.\n\nEmail: ${generatedEmail}`
+      );
+
+      setIsCreateModalVisible(false);
+      fetchUsers();
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to create user.');
+    } finally {
+      setIsCreatingUser(false);
+    }
   };
 
   const updateUserRole = async (newRole: string) => {
@@ -188,6 +258,42 @@ export default function AdminPanelScreen() {
           <View style={[styles.statBox, { backgroundColor: palette.background, borderColor: '#10B981' }]}>
             <Text style={[styles.statCount, { color: '#10B981' }]}>{users.filter(u => u.role === 'operator').length}</Text>
             <Text style={[styles.statLabel, { color: palette.textSecondary }]}>Operators</Text>
+          </View>
+        </View>
+
+        {/* User Provisioning Card */}
+        <View style={[styles.provisioningCard, { backgroundColor: palette.background, borderColor: palette.border, borderWidth: 1 }]}>
+          <View style={styles.provisioningHeaderRow}>
+            <Ionicons name="people-circle" size={24} color={palette.primary} />
+            <Text style={[styles.provisioningTitle, { color: palette.text }]}>User Provisioning</Text>
+          </View>
+          <Text style={[styles.provisioningSubtitle, { color: palette.textSecondary }]}>
+            Securely register and authorize new personnel directly on this device.
+          </Text>
+          <View style={styles.provisioningButtons}>
+            <TouchableOpacity 
+              style={[styles.provisionActionButton, { backgroundColor: '#10B98115', borderColor: '#10B981' }]} 
+              onPress={() => openCreateModal('operator')}
+            >
+              <Ionicons name="construct-outline" size={16} color="#10B981" />
+              <Text style={[styles.provisionActionButtonText, { color: '#10B981' }]}>+ Create Operator</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity 
+              style={[styles.provisionActionButton, { backgroundColor: palette.primary + '15', borderColor: palette.primary }]} 
+              onPress={() => openCreateModal('supervisor')}
+            >
+              <Ionicons name="eye-outline" size={16} color={palette.primary} />
+              <Text style={[styles.provisionActionButtonText, { color: palette.primary }]}>+ Create Supervisor</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity 
+              style={[styles.provisionActionButton, { backgroundColor: '#8B5CF615', borderColor: '#8B5CF6' }]} 
+              onPress={() => openCreateModal('admin')}
+            >
+              <Ionicons name="shield-checkmark-outline" size={16} color="#8B5CF6" />
+              <Text style={[styles.provisionActionButtonText, { color: '#8B5CF6' }]}>+ Create Admin</Text>
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -341,6 +447,102 @@ export default function AdminPanelScreen() {
             )}
           </TouchableOpacity>
         </TouchableOpacity>
+      </Modal>
+
+      {/* User Provisioning Modal */}
+      <Modal visible={isCreateModalVisible} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView 
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={{ width: '100%' }}
+          >
+            <View style={[styles.createSheet, { backgroundColor: palette.background }]}>
+              <View style={styles.sheetHeader}>
+                <View style={[styles.sheetHandle, { backgroundColor: palette.border }]} />
+                <Text style={[styles.sheetTitle, { color: palette.text }]}>
+                  Create {createRole.toUpperCase()}
+                </Text>
+                <Text style={[styles.sheetSubtitle, { color: palette.textSecondary }]}>
+                  Provision a new authenticated user profile.
+                </Text>
+              </View>
+
+              <ScrollView style={styles.createFormScroll} keyboardShouldPersistTaps="handled">
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.inputLabel, { color: palette.textSecondary }]}>Full Name</Text>
+                  <View style={[styles.inputRow, { borderColor: palette.border }]}>
+                    <Ionicons name="person-outline" size={20} color={palette.textSecondary} style={styles.inputIcon} />
+                    <TextInput
+                      style={[styles.textInput, { color: palette.text }]}
+                      placeholder="e.g. John Doe"
+                      placeholderTextColor={palette.textTertiary}
+                      value={createDisplayName}
+                      onChangeText={setCreateDisplayName}
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.inputLabel, { color: palette.textSecondary }]}>Username</Text>
+                  <View style={[styles.inputRow, { borderColor: palette.border }]}>
+                    <Ionicons name="person-circle-outline" size={20} color={palette.textSecondary} style={styles.inputIcon} />
+                    <TextInput
+                      style={[styles.textInput, { color: palette.text }]}
+                      placeholder="e.g. johndoe"
+                      placeholderTextColor={palette.textTertiary}
+                      value={createUsername}
+                      onChangeText={setCreateUsername}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                  </View>
+                  <Text style={[styles.generatedEmailText, { color: palette.textTertiary }]}>
+                    Generated Email: {createUsername.toLowerCase().trim() || '...' }@{createRole}.smarttrack.com
+                  </Text>
+                </View>
+
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.inputLabel, { color: palette.textSecondary }]}>Initial Password</Text>
+                  <View style={[styles.inputRow, { borderColor: palette.border }]}>
+                    <Ionicons name="lock-closed-outline" size={20} color={palette.textSecondary} style={styles.inputIcon} />
+                    <TextInput
+                      style={[styles.textInput, { color: palette.text }]}
+                      placeholder="At least 6 characters"
+                      placeholderTextColor={palette.textTertiary}
+                      secureTextEntry
+                      value={createPassword}
+                      onChangeText={setCreatePassword}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.modalActionButtons}>
+                  <TouchableOpacity
+                    style={[styles.modalCancelButton, { borderColor: palette.border }]}
+                    onPress={() => setIsCreateModalVisible(false)}
+                    disabled={isCreatingUser}
+                  >
+                    <Text style={[styles.modalCancelButtonText, { color: palette.textSecondary }]}>Cancel</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.modalSubmitButton, { backgroundColor: getRoleColor(createRole) }]}
+                    onPress={handleCreateUser}
+                    disabled={isCreatingUser}
+                  >
+                    {isCreatingUser ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <Text style={styles.modalSubmitButtonText}>Create Account</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -554,5 +756,110 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   sortChipTextActive: {
+  },
+  provisioningCard: {
+    borderRadius: borderRadius.xl,
+    padding: spacing.lg,
+    ...shadows.md,
+    marginBottom: spacing.xl,
+  },
+  provisioningHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: 4,
+  },
+  provisioningTitle: {
+    ...typography.bodyBold,
+    fontSize: 16,
+  },
+  provisioningSubtitle: {
+    ...typography.small,
+    marginBottom: spacing.md,
+  },
+  provisioningButtons: {
+    flexDirection: 'column',
+    gap: spacing.sm,
+  },
+  provisionActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: spacing.md,
+    borderRadius: borderRadius.lg,
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+  },
+  provisionActionButtonText: {
+    ...typography.bodyBold,
+    fontSize: 14,
+  },
+  createSheet: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: spacing.xl,
+    paddingBottom: spacing.xxl,
+    ...shadows.lg,
+  },
+  createFormScroll: {
+    marginTop: spacing.sm,
+  },
+  inputGroup: {
+    marginBottom: spacing.md,
+  },
+  inputLabel: {
+    ...typography.small,
+    fontWeight: '600',
+    marginBottom: spacing.xs,
+  },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.md,
+    height: 48,
+  },
+  inputIcon: {
+    marginRight: spacing.sm,
+  },
+  textInput: {
+    flex: 1,
+    ...typography.body,
+  },
+  generatedEmailText: {
+    ...typography.tiny,
+    marginTop: 4,
+    fontStyle: 'italic',
+  },
+  modalActionButtons: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    marginTop: spacing.xl,
+    marginBottom: spacing.lg,
+  },
+  modalCancelButton: {
+    flex: 1,
+    height: 48,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalCancelButtonText: {
+    ...typography.bodyBold,
+  },
+  modalSubmitButton: {
+    flex: 2,
+    height: 48,
+    borderRadius: borderRadius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...shadows.sm,
+  },
+  modalSubmitButtonText: {
+    ...typography.bodyBold,
+    color: colors.white,
   },
 });

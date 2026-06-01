@@ -22,9 +22,9 @@ import { useQuery } from '@tanstack/react-query';
 import { borderRadius, shadows, spacing, typography } from '@/constants/design';
 import { useTheme } from '@/components/ThemeProvider';
 import { useTranslation } from '@/hooks/useTranslation';
-import { useAuthStore } from '@/store/authStore';
 import { addArticle, deleteArticle, getArticles, getCardUnitCost } from '@/lib/api';
 import { Article } from '@/types/production';
+import { useRoleGuard } from '@/hooks/useRoleGuard';
 
 function AccessDenied({ t, palette }: { t: (key: any) => string; palette: any }) {
   return (
@@ -61,15 +61,15 @@ function ArticleRow({
   return (
     <View style={[styles.articleRow, { backgroundColor: palette.background, borderColor: palette.border }]}>
       <View style={styles.articleMeta}>
-        <Text style={[styles.articleRef, { color: palette.primary }]}>{article.ref_sagem}</Text>
+        <Text style={[styles.articleRef, { color: palette.primary }]}>{article.reference}</Text>
         <Text style={[styles.articleDesignation, { color: palette.textSecondary }]}>{article.designation}</Text>
         <Text style={[styles.articleQuantity, { color: palette.textTertiary }]}>
-          {t('articleQuantityValue').replace('{{count}}', String(article.nb_montage))}
+          {t('articleQuantityValue').replace('{{count}}', String(article.assembly_count))}
         </Text>
       </View>
 
       <View style={styles.articleActions}>
-        <Text style={[styles.articlePrice, { color: palette.text }]}>{article.prix_unitaire.toFixed(3)} TND</Text>
+        <Text style={[styles.articlePrice, { color: palette.text }]}>{(article.unit_price || 0).toFixed(3)} TND</Text>
         {canDelete ? (
           <TouchableOpacity activeOpacity={0.8} onPress={() => onDelete(article)} style={styles.deleteButton}>
             <Ionicons name="trash-outline" size={18} color="#EF4444" />
@@ -81,20 +81,19 @@ function ArticleRow({
 }
 
 export default function ArticlesScreen() {
-  const { user } = useAuthStore();
   const { t } = useTranslation();
   const { palette } = useTheme();
+  const { isAuthorized } = useRoleGuard(['admin', 'supervisor']);
   const [search, setSearch] = useState('');
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [draft, setDraft] = useState({
-    ref_sagem: '',
+    reference: '',
     designation: '',
-    nb_montage: '1',
-    prix_unitaire: '',
+    assembly_count: '1',
+    unit_price: '',
   });
 
-  const isAuthorized = user?.role === 'admin' || user?.role === 'supervisor';
   const canDelete = isAuthorized;
 
   const articlesQuery = useQuery({
@@ -116,8 +115,8 @@ export default function ArticlesScreen() {
 
     return (articlesQuery.data || []).filter(
       (article) =>
-        article.ref_sagem.toLowerCase().includes(query) ||
-        article.designation.toLowerCase().includes(query)
+        (article.reference || '').toLowerCase().includes(query) ||
+        (article.designation || '').toLowerCase().includes(query)
     );
   }, [articlesQuery.data, search]);
 
@@ -132,7 +131,7 @@ export default function ArticlesScreen() {
   const confirmDelete = (article: Article) => {
     Alert.alert(
       t('delete'),
-      t('deleteArticleConfirm').replace('{{reference}}', article.ref_sagem),
+      t('deleteArticleConfirm').replace('{{reference}}', article.reference),
       [
         { text: t('cancel'), style: 'cancel' },
         {
@@ -154,7 +153,7 @@ export default function ArticlesScreen() {
   };
 
   const submitArticle = async () => {
-    if (!draft.ref_sagem.trim() || !draft.designation.trim() || !draft.prix_unitaire.trim()) {
+    if (!draft.reference.trim() || !draft.designation.trim() || !draft.unit_price.trim()) {
       Alert.alert(t('error'), t('articleRequiredFields'));
       return;
     }
@@ -162,10 +161,10 @@ export default function ArticlesScreen() {
     setIsSubmitting(true);
 
     const created = await addArticle({
-      ref_sagem: draft.ref_sagem.trim(),
+      reference: draft.reference.trim(),
       designation: draft.designation.trim(),
-      nb_montage: Number(draft.nb_montage.replace(/[^0-9]/g, '')) || 1,
-      prix_unitaire: Number(draft.prix_unitaire.replace(',', '.')) || 0,
+      assembly_count: Number(draft.assembly_count.replace(/[^0-9]/g, '')) || 1,
+      unit_price: Number(draft.unit_price.replace(',', '.')) || 0,
     });
 
     setIsSubmitting(false);
@@ -176,10 +175,10 @@ export default function ArticlesScreen() {
     }
 
     setDraft({
-      ref_sagem: '',
+      reference: '',
       designation: '',
-      nb_montage: '1',
-      prix_unitaire: '',
+      assembly_count: '1',
+      unit_price: '',
     });
     setIsModalVisible(false);
     await reloadData();
@@ -264,8 +263,8 @@ export default function ArticlesScreen() {
               <View style={styles.formField}>
                 <Text style={[styles.formLabel, { color: palette.textSecondary }]}>{t('refSagemLabel')}</Text>
                 <TextInput
-                  value={draft.ref_sagem}
-                  onChangeText={(value) => setDraft((current) => ({ ...current, ref_sagem: value }))}
+                  value={draft.reference}
+                  onChangeText={(value) => setDraft((current) => ({ ...current, reference: value }))}
                   placeholder={t('refSagemPlaceholder')}
                   placeholderTextColor={palette.textTertiary}
                   style={[styles.input, { backgroundColor: palette.backgroundSecondary, borderColor: palette.border, color: palette.text }]}
@@ -287,8 +286,8 @@ export default function ArticlesScreen() {
                 <View style={[styles.formField, styles.formFieldHalf]}>
                   <Text style={[styles.formLabel, { color: palette.textSecondary }]}>{t('nbMontageLabel')}</Text>
                   <TextInput
-                    value={draft.nb_montage}
-                    onChangeText={(value) => setDraft((current) => ({ ...current, nb_montage: value }))}
+                    value={draft.assembly_count}
+                    onChangeText={(value) => setDraft((current) => ({ ...current, assembly_count: value }))}
                     placeholder={t('nbMontagePlaceholder')}
                     placeholderTextColor={palette.textTertiary}
                     keyboardType="number-pad"
@@ -299,8 +298,8 @@ export default function ArticlesScreen() {
                 <View style={[styles.formField, styles.formFieldHalf]}>
                   <Text style={[styles.formLabel, { color: palette.textSecondary }]}>{t('unitPriceTndLabel')}</Text>
                   <TextInput
-                    value={draft.prix_unitaire}
-                    onChangeText={(value) => setDraft((current) => ({ ...current, prix_unitaire: value }))}
+                    value={draft.unit_price}
+                    onChangeText={(value) => setDraft((current) => ({ ...current, unit_price: value }))}
                     placeholder={t('unitPriceTndPlaceholder')}
                     placeholderTextColor={palette.textTertiary}
                     keyboardType="decimal-pad"

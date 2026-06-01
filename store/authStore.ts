@@ -11,7 +11,7 @@ interface AuthState {
   setUser: (user: UserProfile | null) => void;
   setLoading: (loading: boolean) => void;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string, displayName: string, role: UserRole) => Promise<void>;
+  signUp: (email: string, password: string, displayName: string, role: UserRole) => Promise<{ requiresConfirmation: boolean }>;
   signOut: () => Promise<void>;
   initialize: () => Promise<void>;
   refreshProfile: (userId: string) => Promise<void>;
@@ -60,11 +60,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       if (data) {
         const current = get().user
+        const rawDisplayName = data.display_name || data.displayName || current?.displayName || '';
+        // Strip @domain if the display name looks like a full email
+        const displayName = rawDisplayName.includes('@') ? rawDisplayName.split('@')[0] : rawDisplayName;
         const updatedUser = {
           ...current,
           id: data.id,
           email: data.email,
-          displayName: data.display_name || data.displayName || current?.displayName || '',
+          displayName,
           role: data.role as UserRole,
           avatarUrl: data.avatar_url || data.avatarUrl,
           createdAt: data.created_at || data.createdAt,
@@ -106,9 +109,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             console.log('Profile update received:', payload.new);
             const data = payload.new;
             set((state) => {
+              const rawDisplayName = data.display_name || data.displayName || state.user.displayName || '';
+              const displayName = rawDisplayName.includes('@') ? rawDisplayName.split('@')[0] : rawDisplayName;
               const updatedUser = state.user ? {
                 ...state.user,
-                displayName: data.display_name || data.displayName || state.user.displayName,
+                displayName,
                 role: data.role as UserRole,
                 avatarUrl: data.avatar_url || data.avatarUrl,
                 email: data.email || state.user.email,
@@ -181,6 +186,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             user: sessionUser,
             profile: { role: sessionUser.role },
             isAuthenticated: true,
+            isLoading: false,
           });
 
           void (async () => {
@@ -206,10 +212,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
-
-      if (data.user) {
-        // initialize will handle profile fetch and subscription
-      }
     } catch (e) {
       set({ isLoading: false });
       throw e;
@@ -237,15 +239,29 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (data.user) {
         const user = data.user;
 
-        // Insert into public.profiles
-        await (supabase.from('profiles') as any).insert({
-          id: user.id,
-          email: email,
-          display_name: displayName,
-          role: role,
-        });
-
-        // initialize will handle profile fetch and subscription
+        if (data.session) {
+          // Session available immediately — signed in
+          const sessionUser = {
+            id: user.id,
+            email: user.email || '',
+            displayName: displayName,
+            role: role,
+          };
+          set({
+            user: sessionUser,
+            profile: { role },
+            isAuthenticated: true,
+            isLoading: false,
+          });
+          return { requiresConfirmation: false };
+        } else {
+          // Email confirmation required
+          set({ isLoading: false });
+          return { requiresConfirmation: true };
+        }
+      } else {
+        set({ isLoading: false });
+        return { requiresConfirmation: true };
       }
     } catch (e) {
       set({ isLoading: false });

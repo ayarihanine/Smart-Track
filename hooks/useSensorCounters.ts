@@ -1,11 +1,24 @@
 import { useState, useEffect, useCallback } from 'react'
 import { getSupabaseClient } from '@/lib/supabase'
-import { useMachineConfig } from './useMachineConfig'
+import { getTodayBounds } from '@/lib/dates'
+
+// sensor_data: id, node_id, sensor_1_status, sensor_2_status, sensor_3_status, sensor_1_counter, sensor_2_counter, sensor_3_counter, timestamp
+type SensorDataRow = {
+  id: string
+  node_id: string
+  sensor_1_status: boolean
+  sensor_2_status: boolean
+  sensor_3_status: boolean
+  sensor_1_counter: number
+  sensor_2_counter: number
+  sensor_3_counter: number
+  timestamp: string
+}
 
 type SensorState = {
-  counter: number
   lastSeen: string
-  state: string
+  status: boolean   // true = HIGH (1), false = LOW (0)
+  detections: number // cumulative counter value from DB
 }
 
 type SensorData = {
@@ -14,54 +27,78 @@ type SensorData = {
   sensor3: SensorState
 }
 
+type TodayPerformance = {
+  trg: number
+  trs: number
+  cards_started: number
+  cards_good: number
+  cards_target: number
+  loss_count: number
+}
+
 export function useSensorCounters() {
   const [sensors, setSensors] = useState<SensorData>({
-    sensor1: { counter: 0, lastSeen: '-', state: 'LOW' },
-    sensor2: { counter: 0, lastSeen: '-', state: 'LOW' },
-    sensor3: { counter: 0, lastSeen: '-', state: 'LOW' },
+    sensor1: { detections: 0, lastSeen: '-', status: false },
+    sensor2: { detections: 0, lastSeen: '-', status: false },
+    sensor3: { detections: 0, lastSeen: '-', status: false },
+  })
+  const [performance, setPerformance] = useState<TodayPerformance>({
+    trg: 0, trs: 0, cards_started: 0, cards_good: 0, cards_target: 0, loss_count: 0,
   })
   const [loading, setLoading] = useState(true)
-  const { expected } = useMachineConfig()
 
   const fetchSensors = useCallback(async () => {
     const supabase = getSupabaseClient()
     if (!supabase) return
 
-    const startOfDay = new Date()
-    startOfDay.setHours(0, 0, 0, 0)
-
     try {
-      // Fetch recent events to calculate today's max
-      const { data: events, error } = await supabase
-        .from('sensor_events')
-        .select('sensor_id, counter, state, created_at')
-        .gte('created_at', startOfDay.toISOString())
-        .order('created_at', { ascending: false })
-        .limit(200)
+      // 1. Latest sensor row (counters + statuses)
+      const { data, error } = await supabase
+        .from('sensor_data')
+        .select('*')
+        .order('timestamp', { ascending: false })
+        .limit(1)
+        .maybeSingle()
 
       if (error) throw error
 
-      const latest: SensorData = {
-        sensor1: { counter: 0, lastSeen: '-', state: 'LOW' },
-        sensor2: { counter: 0, lastSeen: '-', state: 'LOW' },
-        sensor3: { counter: 0, lastSeen: '-', state: 'LOW' },
-      }
+      const latest = data as SensorDataRow | null
 
-      // Aggregate to find the HIGHEST counter seen today for each sensor
-      if (events) {
-        for (const e of events) {
-          const id = e.sensor_id as keyof SensorData
-          if (id in latest && e.counter > latest[id].counter) {
-            latest[id] = {
-              counter: e.counter,
-              lastSeen: new Date(e.created_at).toLocaleTimeString('fr-FR'),
-              state: e.state || 'LOW',
-            }
-          }
-        }
-      }
+      setSensors({
+        sensor1: {
+          detections: latest ? Number(latest.sensor_1_counter ?? 0) : 0,
+          lastSeen: latest ? new Date(latest.timestamp).toLocaleTimeString('fr-FR') : '-',
+          status: latest ? !!latest.sensor_1_status : false,
+        },
+        sensor2: {
+          detections: latest ? Number(latest.sensor_2_counter ?? 0) : 0,
+          lastSeen: latest ? new Date(latest.timestamp).toLocaleTimeString('fr-FR') : '-',
+          status: latest ? !!latest.sensor_2_status : false,
+        },
+        sensor3: {
+          detections: latest ? Number(latest.sensor_3_counter ?? 0) : 0,
+          lastSeen: latest ? new Date(latest.timestamp).toLocaleTimeString('fr-FR') : '-',
+          status: latest ? !!latest.sensor_3_status : false,
+        },
+      })
 
-      setSensors(latest)
+      // 2. Compute TRG/TRS from electronic_cards + losses (reliable source)
+      const { start, end } = getTodayBounds()
+
+      const [{ data: cards }, { data: losses }, { data: config }] = await Promise.all([
+        supabase.from('electronic_cards').select('status').gte('created_at', start.toISOString()).lt('created_at', end.toISOString()),
+        supabase.from('losses').select('loss_count').gte('created_at', start.toISOString()).lt('created_at', end.toISOString()),
+        supabase.from('configuration').select('expected_cards').order('updated_at', { ascending: false }).limit(1).maybeSingle(),
+      ])
+
+      const started = cards?.length ?? 0
+      const good = cards?.filter(c => c.status === 'completed').length ?? 0
+      const target = Number(config?.expected_cards ?? 0)
+      const lost = (losses ?? []).reduce((sum, r) => sum + Math.max(0, Number(r.loss_count ?? 0)), 0)
+      const trg = target > 0 ? Math.round((good / target) * 100) : 0
+      const trs = started > 0 ? Math.round((good / started) * 100) : 0
+
+      setPerformance({ trg, trs, cards_started: started, cards_good: good, cards_target: target, loss_count: lost })
     } catch (err) {
       console.error('Sensor fetch error:', err)
     } finally {
@@ -71,62 +108,37 @@ export function useSensorCounters() {
 
   useEffect(() => {
     fetchSensors()
-
     const supabase = getSupabaseClient()
     if (!supabase) return
 
     const channel = supabase
       .channel('sensor_realtime_updates')
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'sensor_events'
-      }, () => {
-        // Refetch when any change occurs to get accurate max counts
-        fetchSensors()
-      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sensor_data' }, () => fetchSensors())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'electronic_cards' }, () => fetchSensors())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'losses' }, () => fetchSensors())
       .subscribe()
 
-    return () => {
-      supabase.removeChannel(channel)
-    }
+    return () => { supabase.removeChannel(channel) }
   }, [fetchSensors])
 
-  // --- CALCULATIONS ---
-  const produced = sensors.sensor3.counter
-  const totalInput = sensors.sensor1.counter
-
-  // Zone losses based on sensor deltas
-  const zone1Loss = Math.max(0, sensors.sensor1.counter - sensors.sensor2.counter)
-  const zone2Loss = Math.max(0, sensors.sensor2.counter - sensors.sensor3.counter)
-
-  // Total losses = cards that entered but never exited
-  const totalLosses = zone1Loss + zone2Loss
-
-  // Good cards = produced minus loss-adjusted estimate
-  const goodCards = Math.max(0, produced - totalLosses)
-
-  // TRG (OEE) = Good / Expected, clamped to [0, 100]
-  const trg = expected > 0 ? Math.min(100, Math.round((goodCards / expected) * 100)) : 0
-
-  // TRS = Good / Produced (quality rate), clamped to [0, 100]
-  const trs = produced > 0 ? Math.min(100, Math.round((goodCards / produced) * 100)) : 0
+  const produced = sensors.sensor1.detections
+  const goodCards = sensors.sensor3.detections
 
   return {
     sensors,
     logical: {
-      entry: sensors.sensor1.counter,
-      middle: sensors.sensor2.counter,
-      exit: sensors.sensor3.counter,
+      entry: sensors.sensor1.detections,
+      middle: sensors.sensor2.detections,
+      exit: sensors.sensor3.detections,
     },
     produced,
-    totalLosses,
-    zone1Loss,
-    zone2Loss,
     goodCards,
-    expected,
-    trg,
-    trs,
+    trg: performance.trg,
+    trs: performance.trs,
+    totalLosses: performance.loss_count,
+    expected: performance.cards_target,
+    zone1Loss: 0,
+    zone2Loss: 0,
     loading,
     refresh: fetchSensors,
   }
