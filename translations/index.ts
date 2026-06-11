@@ -274,7 +274,7 @@ export const translations = {
 
         // Onboarding
         slide1Title: 'Track Every Card',
-        slide1Subtitle: 'Welcome to Card Track',
+        slide1Subtitle: 'Welcome to SMART TRACK',
         slide1Body: 'Monitor every electronic card as it moves through your production line — from SMT to final shipping — in real time.',
         slide2Title: 'Scan in Seconds',
         slide2Subtitle: 'Camera or Manual',
@@ -425,7 +425,7 @@ export const translations = {
         exportAction: 'Export X Data',
 
         // Production Dashboard
-        smartTrackCmsLine: 'Card Track',
+        smartTrackCmsLine: 'SMART TRACK',
         dashboardTab: 'Dashboard',
         cardsTab: 'Cards',
         piOnline: 'Pi Online',
@@ -587,6 +587,7 @@ export const translations = {
         roleOperator: 'Operator',
         unknownUser: 'Unknown user',
         unavailable: 'Unavailable',
+        revisitOnboarding: 'Revisit Welcome',
         confirmSignOut: 'Are you sure you want to sign out?',
 
         // Inspection
@@ -912,7 +913,7 @@ export const translations = {
 
         // Onboarding
         slide1Title: 'Suivez chaque carte',
-        slide1Subtitle: 'Bienvenue sur Card Track',
+        slide1Subtitle: 'Bienvenue sur SMART TRACK',
         slide1Body: 'Surveillez chaque carte électronique au fil de la production, du SMT à l\'expédition finale, en temps réel.',
         slide2Title: 'Scannez en secondes',
         slide2Subtitle: 'Caméra ou Manuel',
@@ -1063,7 +1064,7 @@ export const translations = {
         exportAction: 'Exporter les données X',
 
         // Production Dashboard
-        smartTrackCmsLine: 'Card Track',
+        smartTrackCmsLine: 'SMART TRACK',
         dashboardTab: 'Tableau',
         cardsTab: 'Cartes',
         piOnline: 'Pi en ligne',
@@ -1225,6 +1226,7 @@ export const translations = {
         roleOperator: 'Opérateur',
         unknownUser: 'Utilisateur inconnu',
         unavailable: 'Indisponible',
+        revisitOnboarding: 'Revisiter l\'accueil',
         confirmSignOut: 'Êtes-vous sûr de vouloir vous déconnecter ?',
 
         // Inspection
@@ -1526,7 +1528,7 @@ export const translations = {
 
         // Onboarding
         slide1Title: 'تتبع كل بطاقة',
-        slide1Subtitle: 'مرحباً بك في Card Track',
+        slide1Subtitle: 'مرحباً بك في SMART TRACK',
         slide1Body: 'راقب كل بطاقة إلكترونية أثناء انتقالها عبر خط الإنتاج - من مرحلة SMT إلى الشحن النهائي - في الوقت الفعلي.',
         slide2Title: 'مسح في ثوانٍ',
         slide2Subtitle: 'كاميرا أو يدوي',
@@ -1678,7 +1680,7 @@ export const translations = {
         delete: 'حذف',
 
         // Production Dashboard
-        smartTrackCmsLine: 'Card Track',
+        smartTrackCmsLine: 'SMART TRACK',
         dashboardTab: 'لوحة',
         cardsTab: 'البطاقات',
         piOnline: 'Pi متصل',
@@ -1840,6 +1842,7 @@ export const translations = {
         roleOperator: 'مشغل',
         unknownUser: 'مستخدم غير معروف',
         unavailable: 'غير متاح',
+        revisitOnboarding: 'إعادة زيارة الترحيب',
         confirmSignOut: 'هل أنت متأكد أنك تريد تسجيل الخروج؟',
         operator: 'مشغل',
         supervisor: 'مشرف',

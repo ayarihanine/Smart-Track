@@ -71,7 +71,7 @@ export default function LossesScreen() {
         supabase
           .from('electronic_cards')
           .select('id, card_id, status, current_machine, product_id, updated_at, created_at')
-          .in('status', ['cancelled', 'blocked', 'removed'])
+          .in('status', ['cancelled', 'blocked', 'removed', 'lost'])
           .gte('created_at', start)
           .lt('created_at', end)
           .order('updated_at', { ascending: false }),
@@ -119,7 +119,7 @@ export default function LossesScreen() {
     return () => { supabase.removeChannel(ch); };
   }, [fetchLosses]);
 
-  const totalCost = scrapRecords.reduce((s, r) => s + (Number(r.cost_tnd) || 0), 0) + lostCardCost;
+  const totalCost = scrapRecords.reduce((s, r) => s + (Number(r.costTnd) || 0), 0) + lostCardCost;
   const pendingInspections = scrapRecords.filter((r) => !r.root_cause).length;
   const canInspect = ['operator', 'supervisor', 'admin'].includes(userRole);
 
@@ -170,9 +170,11 @@ export default function LossesScreen() {
             </Text>
           </View>
         </View>
-        {lostCards.length > 0 && (
+        {(lostCards.length + scrapRecords.length) > 0 && (
           <View style={[styles.headerBadge, { backgroundColor: isDark ? '#47556920' : '#E2E8F0' }]}>
-            <Text style={[styles.headerBadgeText, { color: '#475569' }]}>{lostCards.length} lost</Text>
+            <Text style={[styles.headerBadgeText, { color: '#475569' }]}>
+              {lostCards.length + scrapRecords.length} {lostCards.length + scrapRecords.length === 1 ? 'loss' : 'losses'}
+            </Text>
           </View>
         )}
       </LinearGradient>
@@ -245,7 +247,7 @@ export default function LossesScreen() {
               <Ionicons name="trash-outline" size={18} color="#6366F1" />
             </View>
             <Text style={[styles.kpiValue, { color: '#6366F1' }]}>
-              {loading ? '—' : scrapRecords.reduce((s, r) => s + (Number(r.loss_count) || 0), 0)}
+              {loading ? '—' : scrapRecords.reduce((s, r) => s + (Number(r.lossCount) || 0), 0)}
             </Text>
             <Text style={[styles.kpiLabel, { color: '#6366F1' }]}>Scrap Qty</Text>
             <Text style={[styles.kpiSub, { color: '#818CF8' }]}>material defects</Text>
@@ -323,7 +325,7 @@ export default function LossesScreen() {
                   const statusAccent =
                     item.status === 'cancelled' ? '#475569' :
                     item.status === 'blocked' ? '#0D9488' :
-                    item.status === 'removed' ? '#EF4444' : '#64748B';
+                    item.status === 'removed' || item.status === 'lost' ? '#EF4444' : '#64748B';
                   return (
                     <TouchableOpacity
                       key={item.id}
@@ -362,9 +364,9 @@ export default function LossesScreen() {
               <View style={{ marginTop: lostCards.length > 0 ? spacing.md : 0 }}>
                 <Text style={[styles.listSectionTitle, { color: '#6366F1' }]}>Material Scrap</Text>
                 {scrapRecords.map((item, idx) => {
-                  const date = new Date(item.created_at);
-                  const cost = Number(item.cost_tnd) || 0;
-                  const zone = item.loss_zone || '—';
+                  const date = new Date(item.createdAt);
+                  const cost = Number(item.costTnd) || 0;
+                  const zone = item.lossZone || '—';
                   const isHighCost = cost > 30;
                   const accent = isHighCost ? '#475569' : '#6366F1';
                   const hasRootCause = !!item.root_cause;
@@ -405,7 +407,7 @@ export default function LossesScreen() {
                         <View style={[styles.lossMeta, { borderTopColor: isDark ? accent + '20' : accent + '15' }]}>
                           <View style={styles.lossMetaItem}>
                             <Ionicons name="hardware-chip-outline" size={12} color={accent + 'aa'} />
-                            <Text style={[styles.lossMetaText, { color: palette.textSecondary }]}>{item.machine_name || '—'}</Text>
+                            <Text style={[styles.lossMetaText, { color: palette.textSecondary }]}>{item.machineName || '—'}</Text>
                           </View>
                           <View style={styles.lossMetaItem}>
                             <Ionicons name="location-outline" size={12} color={accent + 'aa'} />
@@ -413,7 +415,7 @@ export default function LossesScreen() {
                           </View>
                           <View style={[styles.countPill, { backgroundColor: isDark ? accent + '20' : accent + '15' }]}>
                             <Text style={[styles.countText, { color: accent }]}>
-                              {item.loss_count} carte{item.loss_count !== 1 ? 's' : ''}
+                              {item.lossCount} carte{item.lossCount !== 1 ? 's' : ''}
                             </Text>
                           </View>
                         </View>

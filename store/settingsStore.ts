@@ -1,12 +1,15 @@
 import { create } from 'zustand';
 import { AppSettings } from '@/types';
 import { getSettings as fetchSettings, saveSettings } from '@/lib/api';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface ExtraState {
     hasSeenOnboarding: boolean;
     stuckCardThresholdHours: number;
-    setHasSeenOnboarding: (v: boolean) => void;
+    isLoaded: boolean;
+    setHasSeenOnboarding: (v: boolean) => Promise<void>;
     setStuckCardThreshold: (hours: number) => Promise<void>;
+    resetOnboarding: () => Promise<void>;
 }
 
 interface SettingsState extends Omit<AppSettings, 'stuckCardThresholdHours'>, ExtraState {
@@ -39,8 +42,24 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     // Extra State
     hasSeenOnboarding: false,
     stuckCardThresholdHours: 10, // Treated as minutes (max 10) throughout the app
+    isLoaded: false,
 
-    setHasSeenOnboarding: (v: boolean) => set({ hasSeenOnboarding: v }),
+    setHasSeenOnboarding: async (v: boolean) => {
+        set({ hasSeenOnboarding: v });
+        try {
+            await AsyncStorage.setItem('smarttrack_has_seen_onboarding', JSON.stringify(v));
+        } catch (err) {
+            console.error('Failed to save onboarding state:', err);
+        }
+    },
+    resetOnboarding: async () => {
+        set({ hasSeenOnboarding: false });
+        try {
+            await AsyncStorage.setItem('smarttrack_has_seen_onboarding', JSON.stringify(false));
+        } catch (err) {
+            console.error('Failed to reset onboarding state:', err);
+        }
+    },
     setStuckCardThreshold: async (hours: number) => {
         set({ stuckCardThresholdHours: hours });
         await saveSettings({ stuckCardThresholdHours: hours });
@@ -59,8 +78,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
             if (settings) {
                 set(settings);
             }
+            // Reset onboarding state on application startup to ensure onboarding always appears on launch
+            await AsyncStorage.setItem('smarttrack_has_seen_onboarding', JSON.stringify(false));
+            set({ hasSeenOnboarding: false });
         } catch (err) {
             console.error('Failed to load settings:', err);
+        } finally {
+            set({ isLoaded: true });
         }
     },
 }));

@@ -74,8 +74,16 @@ export function useStuckCards(thresholdMinutes = STUCK_THRESHOLD_MINUTES) {
             };
           });
 
-        rows.sort((a, b) => b.minutesAtStage - a.minutesAtStage);
-        setStuckCards(rows);
+        // Deduplicate alerts by card_id to prevent redundant warnings for the same card
+        const seen = new Set<string>();
+        const dedupedRows = rows.filter((r) => {
+          if (seen.has(r.card_id)) return false;
+          seen.add(r.card_id);
+          return true;
+        });
+
+        dedupedRows.sort((a, b) => b.minutesAtStage - a.minutesAtStage);
+        setStuckCards(dedupedRows);
         setLoading(false);
         return;
       }
@@ -136,7 +144,8 @@ export function useStuckCards(thresholdMinutes = STUCK_THRESHOLD_MINUTES) {
             const lastWrite = lastWriteByCardId.get(card.card_id) || 0;
             if (Date.now() - lastWrite > ALERT_WRITE_COOLDOWN_MS) {
               lastWriteByCardId.set(card.card_id, Date.now());
-              s.from('alerts').insert({
+              s.from('alerts').upsert({
+                id: `stuck:${card.card_id}:${card.stage || 'Unknown'}`,
                 card_id: card.card_id,
                 type: 'STUCK_CARD',
                 title: `Stuck Card: ${card.card_id}`,
@@ -144,7 +153,7 @@ export function useStuckCards(thresholdMinutes = STUCK_THRESHOLD_MINUTES) {
                 severity: card.severity === 'critical' ? 'high' : 'medium',
                 is_read: false,
                 created_at: new Date().toISOString(),
-              }).then(({ error }) => {
+              }, { onConflict: 'id' }).then(({ error }) => {
                 if (error && error.code !== '23505') {
                   console.error('Failed to write stuck alert:', error);
                 }

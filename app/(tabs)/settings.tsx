@@ -241,6 +241,11 @@ export default function SettingsTabScreen() {
     }
   };
 
+  const handleRevisitOnboarding = () => {
+    settings.resetOnboarding();
+    router.replace('/onboarding');
+  };
+
   const confirmSignOut = () => {
     Alert.alert(t('signOut'), t('confirmSignOut'), [
       { text: t('cancel'), style: 'cancel' },
@@ -556,6 +561,7 @@ export default function SettingsTabScreen() {
 
         <View style={styles.section}>
           <SectionTitle title={t('accountSection')} palette={palette} />
+          <SettingsLink icon="help-circle-outline" label={t('revisitOnboarding') || 'Revisit Welcome'} onPress={handleRevisitOnboarding} palette={palette} />
           <SettingsLink icon="log-out-outline" label={t('signOut')} onPress={confirmSignOut} palette={palette} />
         </View>
       </ScrollView>

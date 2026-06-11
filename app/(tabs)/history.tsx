@@ -8,7 +8,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect, useRouter } from 'expo-router';
 import { colors, spacing, typography, borderRadius, shadows } from '@/constants/design';
-import { getCards, deleteCard } from '@/lib/api';
+import { getCards } from '@/lib/api';
 import { ElectronicCard, FilterOptions } from '@/types';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
@@ -17,7 +17,6 @@ import { getSupabaseClient } from '@/lib/supabase';
 function CardRow({
   card,
   onPress,
-  onDelete,
   palette,
   t,
   formatDate,
@@ -25,7 +24,6 @@ function CardRow({
 }: {
   card: ElectronicCard;
   onPress: () => void;
-  onDelete: () => void;
   palette: any;
   t: any;
   formatDate: (d: string) => string;
@@ -78,19 +76,6 @@ function CardRow({
               {formatDate(enteredAt)} · {formatTime(enteredAt)}
             </Text>
           </View>
-
-          <TouchableOpacity
-            style={styles.trashBtn}
-            onPress={(e) => {
-              e.stopPropagation();
-              onDelete();
-            }}
-            activeOpacity={0.6}
-          >
-            <View style={[styles.trashIconBox, { backgroundColor: isDark ? '#450a0a' : '#FEF2F2' }]}>
-              <Ionicons name="trash-outline" size={18} color="#EF4444" />
-            </View>
-          </TouchableOpacity>
         </View>
       </TouchableOpacity>
     </Animated.View>
@@ -216,27 +201,7 @@ export default function HistoryScreen() {
     return new Date(d).toLocaleTimeString(language === 'ar' ? 'ar-SA' : language === 'fr' ? 'fr-FR' : 'en-US', { hour: '2-digit', minute: '2-digit' });
   }
 
-  async function handleDelete(cardId: string) {
-    Alert.alert(
-      t('deleteCard' as any) || 'Delete Card',
-      t('deleteCardConfirm' as any) || 'Are you sure you want to delete this card?',
-      [
-        { text: t('cancel' as any), style: 'cancel' },
-        { 
-          text: t('delete' as any), 
-          style: 'destructive',
-          onPress: async () => {
-            const success = await deleteCard(cardId);
-            if (success) {
-              fetchCards(false);
-            } else {
-              Alert.alert(t('error' as any), t('deleteFailed' as any));
-            }
-          }
-        }
-      ]
-    );
-  }
+
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
@@ -330,7 +295,6 @@ export default function HistoryScreen() {
           <CardRow 
             card={item} 
             onPress={() => router.push(`/card/${item.cardId}`)} 
-            onDelete={() => handleDelete(item.id)}
             palette={palette}
             t={t}
             formatDate={formatDate}
@@ -542,16 +506,7 @@ const styles = StyleSheet.create({
     ...typography.small,
     fontWeight: '600',
   },
-  trashBtn: {
-    paddingLeft: spacing.sm,
-  },
-  trashIconBox: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+
   empty: { alignItems: 'center', paddingVertical: spacing.xxxl, gap: spacing.md },
   emptyIconContainer: { 
     width: 80, height: 80, borderRadius: 40, 

@@ -126,11 +126,8 @@ export default function CardDetailScreen() {
     );
   }
 
-  const progress = card.progressPercent || 0;
   const isCompleted = card.status === 'completed';
   const statusColor = STATUS_COLOR[card.status] || '#6B7280';
-  const totalInserted = card.componentInsertions?.reduce((a, c) => a + (c.insertedQuantity || 0), 0) ?? 0;
-  const totalRequired = card.loadingPlan?.reduce((a, p) => a + (p.requiredQuantity || 0), 0) ?? 0;
   const totalMinutes = card.totalTimeMinutes ?? (card.updatedAt && card.createdAt
     ? Math.floor((new Date(card.updatedAt).getTime() - new Date(card.createdAt).getTime()) / 60000)
     : 0);
@@ -184,21 +181,6 @@ export default function CardDetailScreen() {
           end={{ x: 1, y: 1 }}
           style={styles.overviewCard}
         >
-          {/* Progress */}
-          <View style={styles.progressSection}>
-            <View style={styles.progressHeader}>
-              <Text style={styles.progressLabel}>{t('overallProgress')}</Text>
-              <Text style={styles.progressPct}>{progress}%</Text>
-            </View>
-            <View style={styles.progressTrack}>
-              <View style={[styles.progressFill, { width: `${progress}%` }]} />
-            </View>
-            {totalRequired > 0 && (
-              <Text style={styles.progressSub}>
-                {totalInserted} / {totalRequired} components inserted
-              </Text>
-            )}
-          </View>
 
           {/* Stats row */}
           <View style={styles.statsRow}>

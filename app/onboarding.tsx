@@ -61,7 +61,7 @@ export default function OnboardingScreen() {
 
   const handleFinish = () => {
     setHasSeenOnboarding(true);
-    router.replace('/auth');
+    router.replace('/');
   };
 
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {

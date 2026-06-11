@@ -38,12 +38,14 @@ export default function InspectionModal({
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [photoUploadStatus, setPhotoUploadStatus] = useState<string | null>(null);
 
   const reset = () => {
     setSelectedCategory(null);
     setDetails('');
     setPhotoUri(null);
     setValidationError(null);
+    setPhotoUploadStatus(null);
     setSubmitting(false);
   };
 
@@ -65,6 +67,7 @@ export default function InspectionModal({
     });
     if (!result.canceled && result.assets?.[0]) {
       setPhotoUri(result.assets[0].uri);
+      setPhotoUploadStatus(null);
     }
   };
 
@@ -80,6 +83,7 @@ export default function InspectionModal({
     });
     if (!result.canceled && result.assets?.[0]) {
       setPhotoUri(result.assets[0].uri);
+      setPhotoUploadStatus(null);
     }
   };
 
@@ -116,7 +120,7 @@ export default function InspectionModal({
 
   if (!loss) return null;
 
-  const date = new Date(loss.created_at);
+  const date = new Date(loss.createdAt);
 
   return (
     <Modal visible={visible} transparent animationType="slide">
@@ -130,15 +134,15 @@ export default function InspectionModal({
               <Text style={[styles.summaryTitle, { color: palette.text }]}>Loss Inspection</Text>
               <View style={styles.summaryRow}>
                 <Ionicons name="hardware-chip-outline" size={14} color={palette.textTertiary} />
-                <Text style={[styles.summaryText, { color: palette.textSecondary }]}>{loss.machine_name || 'Unknown'}</Text>
+                <Text style={[styles.summaryText, { color: palette.textSecondary }]}>{loss.machineName || 'Unknown'}</Text>
               </View>
               <View style={styles.summaryRow}>
                 <Ionicons name="layers-outline" size={14} color={palette.textTertiary} />
-                <Text style={[styles.summaryText, { color: palette.textSecondary }]}>{loss.loss_count} card{loss.loss_count !== 1 ? 's' : ''} affected</Text>
+                <Text style={[styles.summaryText, { color: palette.textSecondary }]}>{loss.lossCount} card{loss.lossCount !== 1 ? 's' : ''} affected</Text>
               </View>
               <View style={styles.summaryRow}>
                 <Ionicons name="cash-outline" size={14} color={palette.textTertiary} />
-                <Text style={[styles.summaryText, { color: palette.textSecondary }]}>Cost: {loss.cost_tnd.toFixed(3)} TND</Text>
+                <Text style={[styles.summaryText, { color: palette.textSecondary }]}>Cost: {(loss.costTnd || 0).toFixed(3)} TND</Text>
               </View>
               <View style={styles.summaryRow}>
                 <Ionicons name="time-outline" size={14} color={palette.textTertiary} />

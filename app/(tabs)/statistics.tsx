@@ -98,17 +98,8 @@ export default function StatisticsScreen() {
     try {
       setError(null);
 
-      const initialOee = Math.min(100, Math.round((89 * 85) / 100));
-      setLatestPerf({
-        trg_percentage: 89,
-        trs_percentage: 85,
-        actual_count: 1850,
-        good_count: 1650,
-        target_count: 2000,
-        loss_count: 200,
-        ooe_percentage: initialOee,
-        oee_percentage: initialOee,
-      });
+      // Always start with null — never show hardcoded values
+      setLatestPerf(null);
 
       const supabase = getSupabaseClient();
       if (!supabase) return;
@@ -119,19 +110,22 @@ export default function StatisticsScreen() {
       ]);
 
       if (dbPerf) {
-        const trg = Number(dbPerf.trg_percentage) || 89;
-        const trs = Number(dbPerf.trs_percentage) || 85;
-        const oee = Math.min(100, Math.round((trg * trs) / 100));
+        // Use exact DB values — no || fallbacks that mask missing data
+        const ooe = Number(dbPerf.trg_percentage);
+        const oee = Number(dbPerf.trs_percentage);
         setLatestPerf({
-          trg_percentage: trg,
-          trs_percentage: trs,
-          actual_count:   Number(dbPerf.actual_count) || 1850,
-          good_count:     Number(dbPerf.good_count) || 1650,
-          target_count:   Number(dbPerf.target_count) || 2000,
-          loss_count:     Number(dbPerf.loss_count) || 200,
-          ooe_percentage: oee,
+          trg_percentage: ooe,
+          trs_percentage: oee,
+          actual_count:   Number(dbPerf.actual_count),
+          good_count:     Number(dbPerf.good_count),
+          target_count:   Number(dbPerf.target_count),
+          loss_count:     Number(dbPerf.loss_count),
+          ooe_percentage: ooe,
           oee_percentage: oee,
         });
+      } else {
+        // No row in DB today — explicitly show zeros
+        setLatestPerf(null);
       }
 
       if (dailyLossesData && dailyLossesData.length > 0) {
@@ -140,15 +134,8 @@ export default function StatisticsScreen() {
         });
         setDailyLosses(formatted);
       } else {
-        setDailyLosses([
-          { date: '2026-05-22', cards: 3, cost: 45.00 },
-          { date: '2026-05-23', cards: 1, cost: 15.00 },
-          { date: '2026-05-24', cards: 4, cost: 60.00 },
-          { date: '2026-05-25', cards: 2, cost: 30.00 },
-          { date: '2026-05-26', cards: 0, cost: 0.00 },
-          { date: '2026-05-27', cards: 5, cost: 75.00 },
-          { date: '2026-05-28', cards: 2, cost: 30.00 },
-        ]);
+        // No losses data in DB — show empty state
+        setDailyLosses([]);
       }
 
       const { data: sensorRow } = await supabase
@@ -160,17 +147,21 @@ export default function StatisticsScreen() {
 
       if (sensorRow) {
         setEventCounts([
-          { label: 'Capteur 1', count: Number(sensorRow.sensor_1_counter ?? 0) },
-          { label: 'Capteur 2', count: Number(sensorRow.sensor_2_counter ?? 0) },
-          { label: 'Capteur 3', count: Number(sensorRow.sensor_3_counter ?? 0) },
+          { label: t('sensorInput'), count: Number(sensorRow.sensor_1_counter ?? 0) },
+          { label: t('sensorMiddle'), count: Number(sensorRow.sensor_2_counter ?? 0) },
+          { label: t('sensorOutput'), count: Number(sensorRow.sensor_3_counter ?? 0) },
         ]);
       } else {
-        setEventCounts([{ label: 'Capteur 1', count: 0 }, { label: 'Capteur 2', count: 0 }, { label: 'Capteur 3', count: 0 }]);
+        setEventCounts([
+          { label: t('sensorInput'), count: 0 },
+          { label: t('sensorMiddle'), count: 0 },
+          { label: t('sensorOutput'), count: 0 }
+        ]);
       }
 
       const { data: perfHistory } = await supabase
         .from('production_performance')
-        .select('date, actual_count, trg_percentage, trs_percentage, timestamp')
+        .select('date, actual_count, OOE_percentage, OEE_percentage, timestamp')
         .order('timestamp', { ascending: false })
         .limit(20);
 
@@ -185,15 +176,12 @@ export default function StatisticsScreen() {
           .slice(-7);
 
         const labels = deduped.map((item: any) => item.date || '');
-        const trg = deduped.map((item: any) => Number(item.trg_percentage ?? 0));
-        const trs = deduped.map((item: any) => Number(item.trs_percentage ?? 0));
+        const trg = deduped.map((item: any) => Number(item.OOE_percentage ?? 0));
+        const trs = deduped.map((item: any) => Number(item.OEE_percentage ?? 0));
         setTrendData({ labels, trg, trs });
       } else {
-        setTrendData({
-          labels: ['2026-05-22', '2026-05-23', '2026-05-24', '2026-05-25', '2026-05-26', '2026-05-27', '2026-05-28'],
-          trg: [82, 85, 80, 88, 91, 89, 93],
-          trs: [78, 80, 75, 84, 87, 85, 90],
-        });
+        // No performance history in DB — show empty chart
+        setTrendData({ labels: [], trg: [], trs: [] });
       }
     } catch (err) {
       console.error('statistics loadData error:', err);
@@ -212,7 +200,7 @@ export default function StatisticsScreen() {
 
     const channel = supabase.channel('statistics_rt')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'production_performance' }, loadData)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sensor_data' }, loadData)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sensor_data' }, loadData)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'losses' }, loadData)
       .subscribe();
 
@@ -427,9 +415,9 @@ export default function StatisticsScreen() {
                 </Defs>
 
                 {/* Background performance zones */}
-                <Rect x={PAD_L} y={yPos(80)} width={plotW} height={yPos(0) - yPos(80)} fill="url(#zoneGreen)" />
-                <Rect x={PAD_L} y={yPos(60)} width={plotW} height={yPos(80) - yPos(60)} fill="url(#zoneAmber)" />
-                <Rect x={PAD_L} y={yPos(0)} width={plotW} height={yPos(60) - yPos(0)} fill="url(#zoneRed)" />
+                <Rect x={PAD_L} y={yPos(yMax)} width={plotW} height={yPos(Math.min(yMax, 80)) - yPos(yMax)} fill="url(#zoneGreen)" />
+                <Rect x={PAD_L} y={yPos(Math.min(yMax, 80))} width={plotW} height={yPos(Math.min(yMax, 60)) - yPos(Math.min(yMax, 80))} fill="url(#zoneAmber)" />
+                <Rect x={PAD_L} y={yPos(Math.min(yMax, 60))} width={plotW} height={yPos(0) - yPos(Math.min(yMax, 60))} fill="url(#zoneRed)" />
 
                 {/* Zone boundary lines */}
                 <Line x1={PAD_L} y1={yPos(80)} x2={PAD_L + plotW} y2={yPos(80)}

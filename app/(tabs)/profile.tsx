@@ -369,7 +369,10 @@ export default function ProfileScreen() {
           </TouchableOpacity>
         </View>
 
-        <View style={{ height: spacing.xl }} />
+        <View style={styles.brandingContainer}>
+          <Text style={[styles.appName, { color: palette.text }]}>SmartTrack</Text>
+          <Text style={{ color: palette.textSecondary, fontSize: 12, marginTop: 4 }}>Version 4.0.0</Text>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );

@@ -29,17 +29,21 @@ export function usePerformanceMetrics(
         setLoading(true);
         const today = getTodayDateString();
 
+        // Fetch both naming conventions — the DB may use either
         const { data, error } = await supabase
           .from('production_performance')
-          .select('trg_percentage, trs_percentage')
+          .select('trg_percentage, trs_percentage, OOE_percentage, OEE_percentage')
           .eq('date', today)
           .order('timestamp', { ascending: false })
           .limit(1)
           .maybeSingle();
 
         if (!error && data) {
-          setTrg(Number(data.trg_percentage ?? 0));
-          setTrs(Number(data.trs_percentage ?? 0));
+          // Prefer trg/trs; fall back to OOE/OEE column names
+          const ooe = Number((data as any).trg_percentage ?? (data as any).OOE_percentage ?? 0);
+          const oee = Number((data as any).trs_percentage ?? (data as any).OEE_percentage ?? 0);
+          setTrg(ooe);
+          setTrs(oee);
         } else {
           // No row for today — show 0, never calculate client-side
           setTrg(0);

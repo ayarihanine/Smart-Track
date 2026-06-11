@@ -37,15 +37,25 @@ export default function DashboardScreen() {
   const { palette, isDark } = useTheme();
 
   const [refreshing, setRefreshing] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [kpis, setKpis] = useState<DashboardKPIs | null>(null);
+  const [kpis, setKpis] = useState<DashboardKPIs>({
+    cards_started: 0,
+    cards_good: 0,
+    cards_in_progress: 0,
+    target_count: 0,
+    cards_lost: 0,
+    trg: 0,
+    trs: 0,
+    machineName: 'NPM-DX-1',
+  });
   const [sensors, setSensors] = useState<SensorDisplay[]>([]);
 
   const { cards: activeCards, loading: cardsLoading, refetch: refetchCards } = useActiveCards();
   const { totalCost, refetch: refetchLosses } = useTodaysLosses('today');
 
   const loadData = useCallback(async () => {
+    setLoading(true);
     try {
       setError(null);
       const supabase = getSupabaseClient();
@@ -57,7 +67,7 @@ export default function DashboardScreen() {
         fetchConfiguration(),
         supabase
           .from('sensor_data')
-          .select('sensor_1_status, sensor_1_counter, sensor_2_status, sensor_2_counter, sensor_3_status, sensor_3_counter')
+          .select('sensor_1_status, sensor_1_counter, sensor_2_status, sensor_2_counter, sensor_3_status, sensor_3_counter, timestamp')
           .order('timestamp', { ascending: false })
           .limit(1)
           .maybeSingle(),
@@ -71,12 +81,25 @@ export default function DashboardScreen() {
 
       const machineName = confResult?.machine_name || 'NPM-DX-1';
       const sRow = sensorResult.data;
+      
+      const now = Date.now();
+      const lastSeen = sRow?.timestamp ? new Date(sRow.timestamp).getTime() : 0;
+      // Consider system online if the last sensor update is within the last 60 seconds
+      const isSystemOnline = sRow && (now - lastSeen < 60000);
 
-      setSensors([
-        { position: 1, state: sRow ? (sRow.sensor_1_status ? 'HIGH' : 'LOW') : 'UNKNOWN', counter: Number(sRow?.sensor_1_counter ?? 0) },
-        { position: 2, state: sRow ? (sRow.sensor_2_status ? 'HIGH' : 'LOW') : 'UNKNOWN', counter: Number(sRow?.sensor_2_counter ?? 0) },
-        { position: 3, state: sRow ? (sRow.sensor_3_status ? 'HIGH' : 'LOW') : 'UNKNOWN', counter: Number(sRow?.sensor_3_counter ?? 0) },
-      ]);
+      if (sRow) {
+        setSensors([
+          { position: 1, state: isSystemOnline ? (sRow.sensor_1_status ? 'HIGH' : 'LOW') : 'UNKNOWN', counter: Number(sRow.sensor_1_counter ?? 0) },
+          { position: 2, state: isSystemOnline ? (sRow.sensor_2_status ? 'HIGH' : 'LOW') : 'UNKNOWN', counter: Number(sRow.sensor_2_counter ?? 0) },
+          { position: 3, state: isSystemOnline ? (sRow.sensor_3_status ? 'HIGH' : 'LOW') : 'UNKNOWN', counter: Number(sRow.sensor_3_counter ?? 0) },
+        ]);
+      } else {
+        setSensors([
+          { position: 1, state: 'UNKNOWN', counter: 0 },
+          { position: 2, state: 'UNKNOWN', counter: 0 },
+          { position: 3, state: 'UNKNOWN', counter: 0 },
+        ]);
+      }
 
       const cards = cardResult.data ?? [];
       const started = cards.length;
@@ -87,13 +110,13 @@ export default function DashboardScreen() {
       const target = Number(confResult?.expected_cards ?? 0);
       // Lost = cards in terminal bad states (not in progress, not pending, not good)
       const lostCards = cards.filter(c =>
-        ['cancelled', 'blocked', 'removed'].includes(c.status)
+        ['cancelled', 'blocked', 'removed', 'lost'].includes(c.status)
       );
       const lost = lostCards.length;
 
-      // Use database values if available, otherwise use fallback defaults (not local calculation)
-      const trg = dbPerf ? Number(dbPerf.trg_percentage) : 89;
-      const trs = dbPerf ? Number(dbPerf.trs_percentage) : 85;
+      // Always retrieve historical pre-computed values from database, rounded to nearest integer
+      const trg = dbPerf ? Math.round(Number(dbPerf.trg_percentage)) : 0;
+      const trs = dbPerf ? Math.round(Number(dbPerf.trs_percentage)) : 0;
 
       setKpis({
         cards_started: started,
@@ -106,8 +129,23 @@ export default function DashboardScreen() {
         machineName,
       });
     } catch (err) {
-      setError('Failed to load dashboard data.');
       console.error('Dashboard loadData error:', err);
+      // Reset values to 0 when fetch fails / system is offline
+      setSensors([
+        { position: 1, state: 'UNKNOWN', counter: 0 },
+        { position: 2, state: 'UNKNOWN', counter: 0 },
+        { position: 3, state: 'UNKNOWN', counter: 0 },
+      ]);
+      setKpis({
+        cards_started: 0,
+        cards_good: 0,
+        cards_in_progress: 0,
+        target_count: 0,
+        cards_lost: 0,
+        trg: 0,
+        trs: 0,
+        machineName: 'NPM-DX-1',
+      });
     } finally {
       setLoading(false);
     }
@@ -119,7 +157,8 @@ export default function DashboardScreen() {
     const supabase = getSupabaseClient();
     if (!supabase) return;
     const ch = supabase.channel('dashboard_rt')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sensor_data' }, loadData)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'production_performance' }, loadData)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sensor_data' }, loadData)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'losses' }, loadData)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'electronic_cards' }, loadData)
       .subscribe();
@@ -132,39 +171,13 @@ export default function DashboardScreen() {
     setRefreshing(false);
   }, [loadData, refetchCards, refetchLosses]);
 
-  const { trg, trs } = kpis ?? { trg: 0, trs: 0 };
-  const oee = Math.min(100, Math.round((trg * trs) / 100));
+  const { trg, trs } = kpis;
   const piOnline = sensors.some(s => s.state !== 'UNKNOWN');
 
   const kpiColor = (p: number) => p >= 80 ? '#10B981' : p >= 50 ? '#F59E0B' : '#EF4444';
 
-  if (loading) {
-    return (
-      <SafeAreaView style={[styles.safe, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color={palette.primary} />
-          <Text style={[styles.loadingText, { color: palette.textSecondary }]}>Loading dashboard…</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
 
-  if (error || !kpis) {
-    return (
-      <SafeAreaView style={[styles.safe, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
-        <View style={styles.center}>
-          <Ionicons name="alert-circle-outline" size={48} color="#EF4444" />
-          <Text style={[styles.errorText, { color: '#EF4444' }]}>{error || 'No data available.'}</Text>
-          <TouchableOpacity
-            style={[styles.retryBtn, { backgroundColor: palette.primary }]}
-            onPress={() => { setLoading(true); loadData(); }}
-          >
-            <Text style={styles.retryBtnText}>Retry</Text>
-          </TouchableOpacity>
-        </View>
-      </SafeAreaView>
-    );
-  }
+
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: palette.backgroundSecondary }]} edges={['top']}>
@@ -188,15 +201,19 @@ export default function DashboardScreen() {
             </TouchableOpacity>
             <View>
               <Text style={[styles.machineLabel, { color: palette.textTertiary }]}>
-                {kpis.machineName.toUpperCase()}
+                {(kpis?.machineName ?? 'NPM-DX-1').toUpperCase()}
               </Text>
               <Text style={[styles.headerTitle, { color: palette.text }]}>Dashboard</Text>
             </View>
           </View>
           <View style={[styles.onlineBadge, { backgroundColor: piOnline ? (isDark ? '#334155' : '#F1F5F9') : (isDark ? '#1e293b' : '#F3F4F6') }]}>
-            <View style={[styles.onlineDot, { backgroundColor: piOnline ? '#10B981' : palette.textTertiary }]} />
+            {loading ? (
+              <ActivityIndicator size="small" color={palette.primary} style={{ marginRight: 6 }} />
+            ) : (
+              <View style={[styles.onlineDot, { backgroundColor: piOnline ? '#10B981' : palette.textTertiary }]} />
+            )}
             <Text style={[styles.onlineText, { color: piOnline ? palette.text : palette.textTertiary }]}>
-              {piOnline ? 'Live' : 'Offline'}
+              {loading ? 'Syncing...' : (piOnline ? 'Live' : 'Offline')}
             </Text>
           </View>
         </LinearGradient>
@@ -213,20 +230,20 @@ export default function DashboardScreen() {
           <View style={styles.heroRow}>
             <View style={styles.heroMetric}>
               <Text style={[styles.heroMetricLabel, { color: '#64748B' }]}>OOE</Text>
-              <Text style={[styles.heroMetricValue, { color: kpiColor(oee) }]}>
-                {`${oee}%`}
+              <Text style={[styles.heroMetricValue, { color: kpiColor(trg) }]}>
+                {`${trg}%`}
               </Text>
-              <Text style={[styles.heroMetricSub, { color: '#94A3B8' }]}>Combined Score</Text>
+              <Text style={[styles.heroMetricSub, { color: '#94A3B8' }]}>Overall Operations</Text>
             </View>
 
             <View style={[styles.heroDivider, { backgroundColor: '#CBD5E1' }]} />
 
             <View style={styles.heroMetric}>
               <Text style={[styles.heroMetricLabel, { color: '#64748B' }]}>OEE</Text>
-              <Text style={[styles.heroMetricValue, { color: kpiColor(oee) }]}>
-                {`${oee}%`}
+              <Text style={[styles.heroMetricValue, { color: kpiColor(trs) }]}>
+                {`${trs}%`}
               </Text>
-              <Text style={[styles.heroMetricSub, { color: '#94A3B8' }]}>Combined Score</Text>
+              <Text style={[styles.heroMetricSub, { color: '#94A3B8' }]}>Overall Equipment</Text>
             </View>
 
             <View style={[styles.heroDivider, { backgroundColor: '#CBD5E1' }]} />
@@ -245,10 +262,10 @@ export default function DashboardScreen() {
         <Text style={[styles.sectionLabel, { color: palette.textSecondary, paddingHorizontal: spacing.md, paddingTop: spacing.sm }]}>LIVE PRODUCTION</Text>
         <View style={styles.statsGrid}>
           {[
-            { label: 'Cards Started', value: kpis.cards_started, icon: 'enter-outline', sub: 'all cards today', route: '/', accent: '#475569' },
-            { label: 'In Progress',   value: kpis.cards_in_progress, icon: 'sync-outline', sub: 'currently active', route: '/scan', accent: '#6366F1' },
-            { label: 'Completed',     value: kpis.cards_good, icon: 'checkmark-circle-outline', sub: 'finished today', route: '/(tabs)/history', accent: '#0D9488' },
-            { label: 'Cards Lost',    value: kpis.cards_lost, icon: 'close-circle-outline', sub: 'cancelled / blocked', route: '/(tabs)/losses', accent: '#64748B' },
+            { label: 'Cards Started', value: kpis?.cards_started ?? 0, icon: 'enter-outline', sub: 'all cards today', route: '/', accent: '#475569' },
+            { label: 'In Progress',   value: kpis?.cards_in_progress ?? 0, icon: 'sync-outline', sub: 'currently active', route: '/scan', accent: '#6366F1' },
+            { label: 'Completed',     value: kpis?.cards_good ?? 0, icon: 'checkmark-circle-outline', sub: 'finished today', route: '/(tabs)/history', accent: '#0D9488' },
+            { label: 'Cards Lost',    value: kpis?.cards_lost ?? 0, icon: 'close-circle-outline', sub: 'cancelled / blocked', route: '/(tabs)/losses', accent: '#64748B' },
           ].map(({ label, value, icon, sub, route, accent }) => (
             <TouchableOpacity
               key={label}
@@ -277,36 +294,47 @@ export default function DashboardScreen() {
         {/* ── Live Sensors ── */}
         <Text style={[styles.sectionLabel, { color: palette.textSecondary, paddingHorizontal: spacing.md, paddingTop: spacing.md }]}>LIVE SENSORS</Text>
         <View style={styles.sensorsRow}>
-          {sensors.map((s, idx) => {
-            const icons = ['enter-outline', 'swap-horizontal-outline', 'exit-outline'];
-            const names = ['Entry', 'Middle', 'Exit'];
-            const isHigh = s.state === 'HIGH';
-            const accent = isHigh ? '#0D9488' : '#475569';
-            const dotOpacity = isHigh ? 1 : 0.4;
-            return (
-              <View key={s.position} style={[styles.sensorBox, { borderColor: accent + '25' }]}>
-                {/* Colored header */}
-                <View style={[styles.sensorHeader, { backgroundColor: accent + '12' }]}>
-                  <Ionicons name={icons[idx] as any} size={13} color={accent} />
-                  <Text style={[styles.sensorHeaderLabel, { color: accent }]}>{names[idx]}</Text>
+          {sensors && sensors.length > 0 ? (
+            sensors.map((s, idx) => {
+              const icons = ['enter-outline', 'swap-horizontal-outline', 'exit-outline'];
+              const names = ['Entry', 'Middle', 'Exit'];
+              const isHigh = s.state === 'HIGH';
+              const accent = isHigh ? '#0D9488' : '#475569';
+              const dotOpacity = isHigh ? 1 : 0.4;
+              return (
+                <View key={s.position} style={[styles.sensorBox, { borderColor: accent + '25' }]}>
+                  {/* Colored header */}
+                  <View style={[styles.sensorHeader, { backgroundColor: accent + '12' }]}>
+                    <Ionicons name={icons[idx] as any} size={13} color={accent} />
+                    <Text style={[styles.sensorHeaderLabel, { color: accent }]}>{names[idx]}</Text>
+                  </View>
+                  {/* Counter */}
+                  <View style={styles.sensorBody}>
+                    <Text style={[styles.sensorCountValue, { color: palette.text }]}>
+                      {s.counter.toLocaleString()}
+                    </Text>
+                    <Text style={[styles.sensorCountLabel, { color: palette.textTertiary }]}>triggers</Text>
+                  </View>
+                  {/* Status bar */}
+                  <View style={[styles.sensorFooter, { borderTopColor: palette.border }]}>
+                    <View style={[styles.sensorPillDot, { backgroundColor: accent, opacity: dotOpacity }]} />
+                    <Text style={[styles.sensorFooterText, { color: palette.textTertiary }]}>
+                      {isHigh ? 'Active' : 'Idle'}
+                    </Text>
+                  </View>
                 </View>
-                {/* Counter */}
-                <View style={styles.sensorBody}>
-                  <Text style={[styles.sensorCountValue, { color: palette.text }]}>
-                    {s.counter.toLocaleString()}
-                  </Text>
-                  <Text style={[styles.sensorCountLabel, { color: palette.textTertiary }]}>triggers</Text>
-                </View>
-                {/* Status bar */}
-                <View style={[styles.sensorFooter, { borderTopColor: palette.border }]}>
-                  <View style={[styles.sensorPillDot, { backgroundColor: accent, opacity: dotOpacity }]} />
-                  <Text style={[styles.sensorFooterText, { color: palette.textTertiary }]}>
-                    {isHigh ? 'Active' : 'Idle'}
-                  </Text>
-                </View>
+              );
+            })
+          ) : (
+            <View style={[styles.sensorBox, { borderColor: palette.border, flex: 1 }]}>
+              <View style={styles.sensorBody}>
+                <Ionicons name="alert-circle-outline" size={24} color={palette.textTertiary} />
+                <Text style={[styles.sensorCountLabel, { color: palette.textTertiary, marginTop: 8 }]}>
+                  No sensors connected
+                </Text>
               </View>
-            );
-          })}
+            </View>
+          )}
         </View>
 
         {/* ── Active Cards ── */}

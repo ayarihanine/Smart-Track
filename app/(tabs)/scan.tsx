@@ -11,17 +11,13 @@ import { recordScan } from '@/lib/api';
 import { getSupabaseClient } from '@/lib/supabase';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTheme } from '@/components/ThemeProvider';
-import { ZebraScanPanel } from '@/components/ZebraScanPanel';
 import { useRouter } from 'expo-router';
-
-type ScanMode = 'manual' | 'zebra';
 
 export default function ScanScreen() {
   const router = useRouter();
   const { t } = useTranslation();
   const { palette, isDark } = useTheme();
 
-  const [mode, setMode] = useState<ScanMode>('manual');
   const [cardInput, setCardInput] = useState('');
   const [scanning, setScanning] = useState(false);
   const [scanned, setScanned] = useState(false);
@@ -163,99 +159,75 @@ export default function ScanScreen() {
         <View style={{ flex: 1, marginLeft: 12 }}>
           <Text style={[styles.headerTitle, { color: palette.text }]}>Card Identifier</Text>
           <Text style={[styles.headerSub, { color: palette.textSecondary }]}>
-            {mode === 'manual' ? 'Manual Registry Entry' : 'Zebra Scanner Input'}
+            Manual Registry Entry
           </Text>
-        </View>
-        {/* Mode Toggle */}
-        <View style={[styles.modeToggle, { backgroundColor: isDark ? '#334155' : '#F3F4F6' }]}>
-          {(['manual', 'zebra'] as ScanMode[]).map((m) => (
-            <TouchableOpacity
-              key={m}
-              onPress={() => setMode(m)}
-              style={[styles.modeBtn, mode === m && { backgroundColor: palette.primary }]}
-              activeOpacity={0.8}
-            >
-              <Ionicons
-                name={m === 'zebra' ? 'barcode-outline' : 'keypad-outline'}
-                size={18}
-                color={mode === m ? '#fff' : palette.textTertiary}
-              />
-              <Text style={[styles.modeBtnText, { color: mode === m ? '#fff' : palette.textTertiary }]}>
-                {m === 'manual' ? 'Manual' : 'Zebra'}
-              </Text>
-            </TouchableOpacity>
-          ))}
         </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-        {mode === 'zebra' && <ZebraScanPanel />}
-
-        {mode === 'manual' && (
-          <View style={styles.manualSection}>
-            {/* Icon Banner */}
-            <View style={[styles.iconBanner, { backgroundColor: isDark ? '#1e293b' : '#EEF2FF', borderColor: isDark ? '#334155' : '#C7D2FE' }]}>
-              <LinearGradient colors={['#6366F1', '#4F46E5']} style={styles.iconGradient}>
-                <Ionicons name="card-outline" size={32} color="#fff" />
-              </LinearGradient>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.iconBannerTitle, { color: palette.text }]}>Manual Card Tracking</Text>
-                <Text style={[styles.iconBannerSub, { color: palette.textSecondary }]}>
-                  Enter the card reference number to track its production stage
-                </Text>
-              </View>
-            </View>
-
-            {/* Input */}
-            <Text style={[styles.inputLabel, { color: palette.textSecondary }]}>Card Reference</Text>
-            <View style={[styles.inputWrapper, {
-              backgroundColor: palette.background,
-              borderColor: cardInput.trim() ? palette.primary : palette.border,
-            }]}>
-              <Ionicons name="search-outline" size={20} color={cardInput.trim() ? palette.primary : palette.textTertiary} />
-              <TextInput
-                style={[styles.input, { color: palette.text }]}
-                placeholder="e.g. CARD00001"
-                placeholderTextColor={palette.textTertiary}
-                value={cardInput}
-                onChangeText={(v) => setCardInput(v.toUpperCase())}
-                autoCapitalize="characters"
-                returnKeyType="go"
-                onSubmitEditing={() => processTrack(cardInput)}
-              />
-              {cardInput.length > 0 && (
-                <TouchableOpacity onPress={() => setCardInput('')}>
-                  <Ionicons name="close-circle" size={18} color={palette.textTertiary} />
-                </TouchableOpacity>
-              )}
-            </View>
-
-            {/* Track Button */}
-            <TouchableOpacity
-              style={[styles.trackBtn, (!cardInput.trim() || scanning) && { opacity: 0.5 }]}
-              onPress={() => processTrack(cardInput)}
-              disabled={!cardInput.trim() || scanning}
-              activeOpacity={0.85}
-            >
-              {scanning ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <>
-                  <Ionicons name="navigate-circle-outline" size={22} color="#fff" />
-                  <Text style={styles.trackBtnText}>Initialize Tracking</Text>
-                </>
-              )}
-            </TouchableOpacity>
-
-            {/* Info Card */}
-            <View style={[styles.infoCard, { backgroundColor: isDark ? '#1e293b' : '#F0FDF4', borderColor: isDark ? '#334155' : '#BBF7D0' }]}>
-              <Ionicons name="information-circle-outline" size={18} color="#10B981" />
-              <Text style={[styles.infoCardText, { color: palette.textSecondary }]}>
-                Cards are automatically registered if not yet in the system. Their stage is updated on every scan.
+        <View style={styles.manualSection}>
+          {/* Icon Banner */}
+          <View style={[styles.iconBanner, { backgroundColor: isDark ? '#1e293b' : '#EEF2FF', borderColor: isDark ? '#334155' : '#C7D2FE' }]}>
+            <LinearGradient colors={['#6366F1', '#4F46E5']} style={styles.iconGradient}>
+              <Ionicons name="card-outline" size={32} color="#fff" />
+            </LinearGradient>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.iconBannerTitle, { color: palette.text }]}>Manual Card Tracking</Text>
+              <Text style={[styles.iconBannerSub, { color: palette.textSecondary }]}>
+                Enter the card reference number to track its production stage
               </Text>
             </View>
           </View>
-        )}
+
+          {/* Input */}
+          <Text style={[styles.inputLabel, { color: palette.textSecondary }]}>Card Reference</Text>
+          <View style={[styles.inputWrapper, {
+            backgroundColor: palette.background,
+            borderColor: cardInput.trim() ? palette.primary : palette.border,
+          }]}>
+            <Ionicons name="search-outline" size={20} color={cardInput.trim() ? palette.primary : palette.textTertiary} />
+            <TextInput
+              style={[styles.input, { color: palette.text }]}
+              placeholder="e.g. CARD00001"
+              placeholderTextColor={palette.textTertiary}
+              value={cardInput}
+              onChangeText={(v) => setCardInput(v.toUpperCase())}
+              autoCapitalize="characters"
+              returnKeyType="go"
+              onSubmitEditing={() => processTrack(cardInput)}
+            />
+            {cardInput.length > 0 && (
+              <TouchableOpacity onPress={() => setCardInput('')}>
+                <Ionicons name="close-circle" size={18} color={palette.textTertiary} />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {/* Track Button */}
+          <TouchableOpacity
+            style={[styles.trackBtn, (!cardInput.trim() || scanning) && { opacity: 0.5 }]}
+            onPress={() => processTrack(cardInput)}
+            disabled={!cardInput.trim() || scanning}
+            activeOpacity={0.85}
+          >
+            {scanning ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <>
+                <Ionicons name="navigate-circle-outline" size={22} color="#fff" />
+                <Text style={styles.trackBtnText}>Initialize Tracking</Text>
+              </>
+            )}
+          </TouchableOpacity>
+
+          {/* Info Card */}
+          <View style={[styles.infoCard, { backgroundColor: isDark ? '#1e293b' : '#F0FDF4', borderColor: isDark ? '#334155' : '#BBF7D0' }]}>
+            <Ionicons name="information-circle-outline" size={18} color="#10B981" />
+            <Text style={[styles.infoCardText, { color: palette.textSecondary }]}>
+              Cards are automatically registered if not yet in the system. Their stage is updated on every scan.
+            </Text>
+          </View>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );

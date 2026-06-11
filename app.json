@@ -1,17 +1,62 @@
 {
   "expo": {
-    "name": "Card Track",
+    "name": "SMART TRACK",
     "slug": "card-track",
     "version": "1.0.0",
     "scheme": "cardtrack",
-    "icon": "./assets/images/icon.png",
+    "icon": "./smartttrack/photo/cardtrack.png",
+    "splash": {
+      "image": "./smartttrack/photo/cardtrack.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0F172A"
+    },
     "extra": {
       "eas": {
         "projectId": "227fc50c-1dd6-482d-9785-52e9c24bd125"
       }
     },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "The app accesses your photos to attach inspection images.",
+          "cameraPermission": "The app accesses your camera to capture inspection photos."
+        }
+      ],
+      [
+        "expo-file-system",
+        {
+          "cameraPermission": "Allow access to camera for photo uploads."
+        }
+      ]
+    ],
+    "ios": {
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "This app needs access to your photo library to attach inspection images.",
+        "NSCameraUsageDescription": "This app needs access to your camera to capture inspection photos.",
+        "NSPhotoLibraryAddUsageDescription": "This app needs permission to save photos to your photo library."
+      }
+    },
     "android": {
-      "package": "com.ayarih1.cardtrack"
+      "package": "com.ayarih1.cardtrack",
+      "permissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.INTERNET",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.INTERNET"
+      ]
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/227fc50c-1dd6-482d-9785-52e9c24bd125"
     }
   }
 }

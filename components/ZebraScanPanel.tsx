@@ -342,22 +342,24 @@ export function ZebraScanPanel() {
     try {
       setUsbStatus('connecting');
 
-      if (nav.hid?.requestDevice) {
+      // Try USB first (as default)
+      if (nav.usb?.requestDevice) {
         try {
-          const devices = await nav.hid.requestDevice({ filters: [{ vendorId: ZEBRA_VENDOR_ID }] });
-          if (devices?.[0]) {
-            await attachHidDevice(devices[0]);
+          const device = await nav.usb.requestDevice({ filters: [{ vendorId: ZEBRA_VENDOR_ID }] });
+          if (device) {
+            await attachUsbDevice(device);
             return;
           }
         } catch (err: any) {
-          if (err?.name !== 'NotFoundError' || !nav.usb?.requestDevice) throw err;
+          if (err?.name !== 'NotFoundError' || !nav.hid?.requestDevice) throw err;
         }
       }
 
-      if (nav.usb?.requestDevice) {
-        const device = await nav.usb.requestDevice({ filters: [{ vendorId: ZEBRA_VENDOR_ID }] });
-        if (device) {
-          await attachUsbDevice(device);
+      // Fall back to HID
+      if (nav.hid?.requestDevice) {
+        const devices = await nav.hid.requestDevice({ filters: [{ vendorId: ZEBRA_VENDOR_ID }] });
+        if (devices?.[0]) {
+          await attachHidDevice(devices[0]);
           return;
         }
       }

@@ -1,5 +1,7 @@
-import { getSupabaseClient } from './supabase';
+import { getSupabaseClient, uploadFileToStorage } from './supabase';
+import { handleError, ErrorCategory } from './errorHandler';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system';
 import {
   ElectronicCard, ScanEvent, AppSettings, AnalyticsData, SystemNode, FilterOptions,
   LeaderboardEntry, UserProfile, Issue, Task, Comment, Product, LoadingPlanEntry, ComponentInsertion,
@@ -8,7 +10,7 @@ import {
   InspectedLoss, RootCauseCategory,
 } from '@/types';
 import { getActiveElapsedMs } from '@/store/alertsStore';
-import { getTodayBounds as sharedGetTodayBounds } from '@/lib/dates';
+import { getTodayBounds as sharedGetTodayBounds, getTodayDateString } from '@/lib/dates';
 
 const OFFLINE_KEYS = {
   CARDS: 'smarttrack_offline_cards',
@@ -153,7 +155,7 @@ export async function calculateProgress(cardId: string): Promise<number> {
 
 export async function getCards(filters?: FilterOptions): Promise<ElectronicCard[]> {
   const supabase = getSupabaseClient();
-  if (!supabase) return getMockCards();
+  if (!supabase) return [];
 
   try {
     let query = supabase
@@ -199,16 +201,16 @@ export async function getCards(filters?: FilterOptions): Promise<ElectronicCard[
     return cards;
   } catch (error) {
     console.error('getCards failed', error);
-    // Return offline cache
+    // Return offline cache if available
     const raw = await AsyncStorage.getItem(OFFLINE_KEYS.CARDS);
     if (raw) return JSON.parse(raw);
-    return getMockCards();
+    return [];
   }
 }
 
 export async function getCard(cardId: string): Promise<ElectronicCard | null> {
   const supabase = getSupabaseClient();
-  if (!supabase) return getMockCard(cardId);
+  if (!supabase) return null;
 
   try {
     const { data: records, error } = await supabase
@@ -223,7 +225,7 @@ export async function getCard(cardId: string): Promise<ElectronicCard | null> {
     return card;
   } catch (error) {
     console.error('getCard failed', error);
-    return getMockCard(cardId);
+    return null;
   }
 }
 
@@ -443,7 +445,7 @@ export async function recordScan(data: {
     resolvedCard = cardData as any;
 
     if (!resolvedCard) {
-      // ilike missed — try exact match before auto-creating
+      // ilike missed — try exact match
       const { data: exactCard } = await supabase
         .from('electronic_cards')
         .select('id, product_id, current_machine')
@@ -455,31 +457,10 @@ export async function recordScan(data: {
         cardUuid = resolvedCard.id;
         productId = resolvedCard.product_id;
       } else {
-        // Auto-create the card if it doesn't exist
-        const { data: defaultProducts } = await supabase.from('products').select('id').limit(1);
-        const defaultProductId = defaultProducts && defaultProducts.length > 0 ? (defaultProducts[0] as any).id : null;
-
-        const insertPayload: Record<string, any> = {
-          card_id: data.cardId,
-          product_id: defaultProductId,
-          status: 'in_progress',
-          current_machine: data.location || data.stage || 'Unknown',
-        };
-
-        const { data: newCardData, error: createError } = await (supabase.from('electronic_cards') as any)
-          .insert(insertPayload)
-          .select('id, product_id')
-          .single();
-          
-        if (createError) {
-          // If it fails to create (e.g. strict DB constraints), fallback to error
-          const error = new Error('Card not found and auto-create failed: ' + createError.message);
-          (error as any).code = 'CARD_NOT_FOUND';
-          throw error;
-        }
-        
-        cardUuid = newCardData.id;
-        productId = newCardData.product_id;
+        // Card does not exist — reject instead of auto-creating
+        const error = new Error(`Card '${data.cardId}' not found in the database.`);
+        (error as any).code = 'CARD_NOT_FOUND';
+        throw error;
       }
     } else {
       cardUuid = resolvedCard.id;
@@ -521,30 +502,57 @@ export async function recordScan(data: {
 
     if (updateCardError) throw updateCardError;
 
-    // 4. Insert scan event (sensor_events column: card_id TEXT FK, event_type, machine_name, timestamp)
-    const { data: recordArray, error } = await (supabase.from('sensor_events') as any)
+    const productionEventType = getProductionHistoryEventType(data.eventType);
+    const metadata = Object.fromEntries(
+      Object.entries({
+        scannedBy: user?.email || user?.id || 'Manual Entry',
+        operatorId: user?.id,
+        notes: data.notes,
+        partReference: data.partReference,
+        batchId: data.batchId,
+        source: 'manual_scan',
+      }).filter(([, value]) => value !== undefined && value !== null && value !== '')
+    );
+
+    const { data: recordArray, error } = await (supabase.from('production_history') as any)
       .insert({
         card_id: data.cardId,
-        event_type: data.eventType || 'location_update',
-        machine_name: data.location || data.stage || 'Unknown',
+        event_type: productionEventType,
+        machine_name: data.stage || data.location || 'Unknown',
+        station: data.location || data.stage || 'Manual Entry',
+        metadata,
       })
       .select();
 
     if (error) throw error;
 
     const record = recordArray && recordArray.length > 0 ? recordArray[0] : {
-        id: `optimistic-${Date.now()}`,
-        card_id: data.cardId,
-        event_type: data.eventType || 'location_update',
-        machine_name: data.location || data.stage || 'Unknown',
-        timestamp: new Date().toISOString()
+      id: `optimistic-${Date.now()}`,
+      card_id: data.cardId,
+      event_type: productionEventType,
+      machine_name: data.stage || data.location || 'Unknown',
+      station: data.location || data.stage || 'Manual Entry',
+      metadata,
+      created_at: new Date().toISOString()
     };
 
-
-
-    return mapDbScan(record);
+    return mapDbProductionHistoryToScanEvent(record);
   } catch (error) {
     throw error;
+  }
+}
+
+function getProductionHistoryEventType(eventType?: ScanEvent['eventType']): string {
+  switch (eventType) {
+    case 'machine_entry':
+    case 'location_update':
+      return 'scan_entered';
+    case 'quality_alert':
+      return 'quality_check';
+    case 'blocking_anomaly':
+      return 'error';
+    default:
+      return eventType || 'scan_entered';
   }
 }
 
@@ -678,7 +686,7 @@ export async function sendNodeCommand(nodeId: string, command: 'ping' | 'reboot'
 
 export async function getLeaderboard(period: 'today' | 'this_week' | 'all_time'): Promise<LeaderboardEntry[]> {
   const supabase = getSupabaseClient();
-  if (!supabase) return getMockLeaderboard();
+  if (!supabase) return [];
 
   try {
     const session = (await supabase.auth.getSession())?.data.session;
@@ -713,7 +721,6 @@ export async function getLeaderboard(period: 'today' | 'this_week' | 'all_time')
 
     const counts: Record<string, number> = {};
     filteredEvents.forEach(e => {
-      // Find the operator_id or scanned_by from the raw data or mapping
       const rawEvent = (rawEvents as any[])?.find(re => re.id === e.id);
       const opId = rawEvent?.operator_id || rawEvent?.operatorId || rawEvent?.scanned_by || rawEvent?.scannedBy || 'unknown';
       if (opId !== 'unknown') {
@@ -721,7 +728,6 @@ export async function getLeaderboard(period: 'today' | 'this_week' | 'all_time')
       }
     });
 
-    // Always fetch all profiles to show "actual uses" in the database, regardless of role
     const { data: allProfiles, error: profileError } = await (supabase
       .from('profiles') as any)
       .select('id, display_name, avatar_url, role');
@@ -739,27 +745,14 @@ export async function getLeaderboard(period: 'today' | 'this_week' | 'all_time')
       rank: 0,
     }));
 
-    // If we have very few real users, we might want to still show them 
-    // but the user specifically asked for "actual uses in the database".
-    
     return entries
       .sort((a, b) => b.cardsScanned - a.cardsScanned)
       .map((e, idx) => ({ ...e, rank: idx + 1 }));
 
   } catch (err) {
     console.error('Leaderboard fetch error:', err);
-    return getMockLeaderboard();
+    return [];
   }
-}
-
-function getMockLeaderboard(): LeaderboardEntry[] {
-  return [
-    { rank: 1, userId: '1', displayName: 'Adam Al-Farsi', cardsScanned: 142, avgTimeMinutes: 4.2, trend: 'up' },
-    { rank: 2, userId: '2', displayName: 'Sarah Chen', cardsScanned: 138, avgTimeMinutes: 4.5, trend: 'stable' },
-    { rank: 3, userId: '3', displayName: 'Marc Dupont', cardsScanned: 125, avgTimeMinutes: 4.1, trend: 'up' },
-    { rank: 4, userId: '4', displayName: 'Layla Mansour', cardsScanned: 118, avgTimeMinutes: 5.2, trend: 'down' },
-    { rank: 5, userId: '5', displayName: 'John Smith', cardsScanned: 112, avgTimeMinutes: 4.8, trend: 'stable' },
-  ];
 }
 
 // ============================================================================
@@ -768,7 +761,21 @@ function getMockLeaderboard(): LeaderboardEntry[] {
 
 export async function getAnalytics(period: 'today' | 'this_week' | 'all_time'): Promise<AnalyticsData> {
   const supabase = getSupabaseClient();
-  if (!supabase) return getMockAnalytics(period);
+  const empty: AnalyticsData = {
+    period,
+    totalCards: 0,
+    completed: 0,
+    inProgress: 0,
+    completionRate: 0,
+    targetRate: 0,
+    weeklyGrowth: 0,
+    activeNow: 0,
+    sinceDate: '',
+    stageBreakdown: [],
+    insight: '',
+    avgCycleTime: 0,
+  };
+  if (!supabase) return empty;
 
   try {
     const { data: cards, error } = await supabase
@@ -802,16 +809,16 @@ export async function getAnalytics(period: 'today' | 'this_week' | 'all_time'): 
       completed,
       inProgress,
       completionRate: total > 0 ? Math.round((completed / total) * 100) : 0,
-      targetRate: 85,
-      weeklyGrowth: 5,
-      activeNow: Math.min(inProgress, 7),
-      sinceDate: 'Nov 1, 2023',
+      targetRate: 0,
+      weeklyGrowth: 0,
+      activeNow: inProgress,
+      sinceDate: '',
       stageBreakdown,
       insight: getInsight(stageBreakdown, completed, total),
-      avgCycleTime: 145,
+      avgCycleTime: 0,
     };
   } catch {
-    return getMockAnalytics(period);
+    return empty;
   }
 }
 
@@ -1075,59 +1082,7 @@ export async function getUsers(): Promise<UserProfile[]> {
   }));
 }
 
-export function getMockCards(): ElectronicCard[] {
-  return [
-    {
-      id: '1', cardId: 'CARD12345', productId: 'prod-A',
-      status: 'in_progress', currentMachine: 'Stage 2: Testing',
-      currentMachineStatus: 'in_progress',
-      progressPercent: 50, totalTimeMinutes: 145, scanPoints: 4,
-      createdAt: new Date(Date.now() - 7200000).toISOString(),
-      updatedAt: new Date(Date.now() - 3600000).toISOString(),
-    },
-    {
-      id: '2', cardId: 'CARD67890', productId: 'prod-B',
-      status: 'in_progress', currentMachine: 'Stage 4: Shipping',
-      currentMachineStatus: 'in_progress',
-      progressPercent: 75, totalTimeMinutes: 210, scanPoints: 4,
-      createdAt: new Date(Date.now() - 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    },
-    {
-      id: '3', cardId: 'CARD11111', productId: 'prod-C',
-      status: 'in_progress', currentMachine: 'Stage 1: Assembly',
-      currentMachineStatus: 'in_progress',
-      progressPercent: 25, totalTimeMinutes: 60, scanPoints: 1,
-      createdAt: new Date(Date.now() - 18000000).toISOString(),
-      updatedAt: new Date(Date.now() - 18000000).toISOString(),
-    },
-    {
-      id: '4', cardId: 'CARD99887', productId: 'prod-D',
-      status: 'completed', currentMachine: 'Completed',
-      currentMachineStatus: 'completed',
-      progressPercent: 100, totalTimeMinutes: 320, scanPoints: 4,
-      createdAt: new Date(Date.now() - 172800000).toISOString(),
-      updatedAt: new Date(Date.now() - 172800000).toISOString(),
-    },
-    {
-      id: '5', cardId: 'CARD55443', productId: 'prod-E',
-      status: 'completed', currentMachine: 'Completed',
-      currentMachineStatus: 'completed',
-      progressPercent: 100, totalTimeMinutes: 290, scanPoints: 4,
-      createdAt: new Date(Date.now() - 259200000).toISOString(),
-      updatedAt: new Date(Date.now() - 259200000).toISOString(),
-    },
-  ];
-}
 
-export function getMockCard(cardId: string): ElectronicCard {
-  const base = getMockCards().find(c => c.cardId === cardId);
-  const card = base || getMockCards()[0];
-  return {
-    ...card,
-    cardId,
-  };
-}
 
 export async function getStuckCards(cards: ElectronicCard[], thresholdMinutes: number): Promise<ElectronicCard[]> {
   const stuckCards: ElectronicCard[] = [];
@@ -1147,27 +1102,7 @@ export async function getStuckCards(cards: ElectronicCard[], thresholdMinutes: n
   return stuckCards;
 }
 
-function getMockAnalytics(period: string): AnalyticsData {
-  return {
-    period: period as any,
-    totalCards: 47,
-    completed: 32,
-    inProgress: 15,
-    completionRate: 68,
-    targetRate: 85,
-    weeklyGrowth: 5,
-    activeNow: 7,
-    sinceDate: 'Nov 1, 2023',
-    stageBreakdown: [
-      { stage: 'SMT', count: 18, percent: 40, color: '#10B981' },
-      { stage: 'THT', count: 10, percent: 22, color: '#2563EB' },
-      { stage: 'Assembly', count: 5, percent: 11, color: '#F59E0B' },
-      { stage: 'QC', count: 2, percent: 4, color: '#8B5CF6' },
-    ],
-    insight: 'Highest completion rate on Tuesdays. SMT stage shows best efficiency this week. Keep it up!',
-    avgCycleTime: 145,
-  };
-}
+
 // ============================================================================
 // COLLABORATION & TASK MANAGEMENT
 // ============================================================================
@@ -1496,6 +1431,21 @@ export async function getLatestProductionPerformance(): Promise<ProductionPerfor
   if (!supabase) return null;
 
   try {
+    // Prefer today's row first for accurate live metrics
+    const today = getTodayDateString();
+    const { data: todayData, error: todayError } = await supabase
+      .from('production_performance')
+      .select('*')
+      .eq('date', today)
+      .order('timestamp', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!todayError && todayData) {
+      return mapProductionPerformanceRow(todayData);
+    }
+
+    // Fallback: return the most recent row from any date
     const { data, error } = await supabase
       .from('production_performance')
       .select('*')
@@ -1519,40 +1469,78 @@ export async function getLatestOEE(): Promise<ProductionPerformanceRow | null> {
   return getLatestProductionPerformance();
 }
 
+export async function fetchOEEAndOOE(limit: number = 10): Promise<Array<{ oee: number; ooe: number; timestamp: string; machine_name: string }>> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+
+  try {
+    const { data, error } = await supabase
+      .from('production_performance')
+      .select('OEE_percentage, OOE_percentage, timestamp, machine_name')
+      .order('timestamp', { ascending: false })
+      .limit(limit);
+
+    if (error) throw error;
+
+    return (data || []).map((row: any) => ({
+      oee: Number(row?.OEE_percentage ?? 0),
+      ooe: Number(row?.OOE_percentage ?? 0),
+      timestamp: row?.timestamp || '',
+      machine_name: row?.machine_name || '',
+    }));
+  } catch (error) {
+    console.error('fetchOEEAndOOE failed', error);
+    return [];
+  }
+}
+
 export async function getTodayLossesSummary(): Promise<TodayLossSummary> {
   const supabase = getSupabaseClient();
   if (!supabase) return { totalCards: 0, totalCost: 0 };
 
   try {
     const { start, end } = getTodayBounds();
-    const { data: lostCards, error: lostError } = await supabase
-      .from('electronic_cards')
-      .select('id, product_id')
-      .in('status', ['cancelled', 'blocked', 'removed'])
-      .gte('created_at', start.toISOString())
-      .lt('created_at', end.toISOString());
-
-    if (lostError) throw lostError;
-
-    const totalCards = (lostCards || []).length;
-    let totalCost = 0;
-
-    if (totalCards > 0) {
-      const productIds = [...new Set(lostCards.map((c: any) => c.product_id).filter(Boolean))];
-      const { data: articles, error: articlesError } = await supabase
+    const [lostResult, scrapResult, articlesResult] = await Promise.all([
+      supabase
+        .from('electronic_cards')
+        .select('id, product_id')
+        .in('status', ['cancelled', 'blocked', 'removed'])
+        .gte('created_at', start.toISOString())
+        .lt('created_at', end.toISOString()),
+      supabase
+        .from('losses')
+        .select('id, cost_tnd')
+        .gte('created_at', start.toISOString())
+        .lt('created_at', end.toISOString()),
+      supabase
         .from('articles')
-        .select('unit_price, assembly_count')
-        .in('id', productIds.length > 0 ? productIds : ['none']);
-      if (!articlesError && articles && articles.length > 0) {
-        const costPerCard = articles.reduce(
-          (sum, a) => sum + (Number(a.unit_price || 0) * Number(a.assembly_count || 0)),
-          0
-        );
-        totalCost = totalCards * costPerCard;
-      }
+        .select('id, unit_price, assembly_count'),
+    ]);
+
+    if (lostResult.error) throw lostResult.error;
+    if (scrapResult.error) throw scrapResult.error;
+
+    const lostCards = lostResult.data || [];
+    const scrapRecords = scrapResult.data || [];
+    const articles = articlesResult.data || [];
+
+    const articleCostMap = new Map<string, number>();
+    for (const a of articles) {
+      articleCostMap.set(a.id, Number(a.unit_price || 0) * Number(a.assembly_count || 0));
     }
 
-    return { totalCards, totalCost };
+    let lostCardCost = 0;
+    for (const card of lostCards) {
+      const pid = card.product_id;
+      lostCardCost += pid ? (articleCostMap.get(pid) || 0) : 0;
+    }
+
+    const scrapCost = scrapRecords.reduce((sum, r) => sum + Number(r.cost_tnd || 0), 0);
+
+    return {
+      totalCards: lostCards.length + scrapRecords.length,
+      totalCost: lostCardCost + scrapCost,
+    };
   } catch (error) {
     console.error('getTodayLossesSummary failed', error);
     return { totalCards: 0, totalCost: 0 };
@@ -1640,6 +1628,11 @@ export async function recordLoss(loss: {
 }
 
 function mapProductionPerformanceRow(row: any): ProductionPerformanceRow {
+  // Support both column naming conventions:
+  //   trg_percentage / trs_percentage  (legacy / seed SQL)
+  //   OOE_percentage / OEE_percentage  (Pi5 ingest / some migrations)
+  const ooe = Number(row?.trg_percentage ?? row?.OOE_percentage ?? 0);
+  const oee = Number(row?.trs_percentage ?? row?.OEE_percentage ?? 0);
   return {
     id: row?.id ?? '',
     machine_name: row?.machine_name || '',
@@ -1647,8 +1640,8 @@ function mapProductionPerformanceRow(row: any): ProductionPerformanceRow {
     actual_count: Number(row?.actual_count ?? 0),
     good_count:   Number(row?.good_count ?? 0),
     loss_count: Number(row?.loss_count ?? 0),
-    trg_percentage: Number(row?.OOE_percentage ?? row?.trg_percentage ?? 0),
-    trs_percentage: Number(row?.OEE_percentage ?? row?.trs_percentage ?? 0),
+    trg_percentage: ooe,
+    trs_percentage: oee,
     date: row?.date || '',
     timestamp: row?.timestamp || new Date().toISOString(),
   };
@@ -1677,7 +1670,7 @@ export async function getDailyLossesStats(): Promise<{ jour: string; total_carte
       // Include both scrap losses and lost electronic_cards
       const [lossesData, cardsData, articlesData] = await Promise.all([
         supabase.from('losses').select('created_at, loss_count, cost_tnd'),
-        supabase.from('electronic_cards').select('status, product_id, created_at').in('status', ['cancelled', 'blocked', 'removed']),
+        supabase.from('electronic_cards').select('status, product_id, created_at').in('status', ['cancelled', 'blocked', 'removed', 'lost']),
         supabase.from('articles').select('id, unit_price, assembly_count'),
       ]);
 
@@ -1939,69 +1932,7 @@ export async function deleteArticle(id: string | number): Promise<boolean> {
   }
 }
 
-interface PerteParJour {
-  jour: string;
-  total_cartes: number;
-  total_cout: number;
-  machine: string;
-}
 
-interface ProductionParJour {
-  jour: string;
-  machine1: number;
-  machine2: number;
-  machine3: number;
-}
-
-interface PerteParMachine {
-  machine: string;
-  nb_incidents: number;
-  total_cartes_perdues: number;
-  cout_total: number;
-}
-
-function getMockDailyLossesStats(): PerteParJour[] {
-  const data: PerteParJour[] = [];
-  const now = new Date();
-  for (let i = 29; i >= 0; i--) {
-    const d = new Date();
-    d.setDate(now.getDate() - i);
-    const dayStr = d.toISOString().split('T')[0];
-    const total_cartes = (i % 7 === 0) ? Math.floor(Math.random() * 5) + 2 : (i % 5 === 0) ? Math.floor(Math.random() * 3) + 1 : 0;
-    data.push({
-      jour: dayStr,
-      total_cartes,
-      total_cout: total_cartes * 24.5,
-      machine: 'CMS Line 1',
-    });
-  }
-  return data;
-}
-
-function getMockDailyProductionStats(): ProductionParJour[] {
-  const data: ProductionParJour[] = [];
-  const now = new Date();
-  for (let i = 29; i >= 0; i--) {
-    const d = new Date();
-    d.setDate(now.getDate() - i);
-    const dayStr = d.toISOString().split('T')[0];
-    data.push({
-      jour: dayStr,
-      machine1: Math.floor(Math.random() * 100) + 300,
-      machine2: Math.floor(Math.random() * 80) + 250,
-      machine3: Math.floor(Math.random() * 120) + 350,
-    });
-  }
-  return data;
-}
-
-function getMockLossesByMachineStats(): PerteParMachine[] {
-  return [
-    { machine: 'SMT-PickPlace', nb_incidents: 12, total_cartes_perdues: 24, cout_total: 588.0 },
-    { machine: 'Reflow-Oven', nb_incidents: 5, total_cartes_perdues: 10, cout_total: 245.0 },
-    { machine: 'THT-Soldering', nb_incidents: 8, total_cartes_perdues: 15, cout_total: 367.5 },
-  ];
-}
 
 function looksLikeUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -2171,6 +2102,9 @@ export function computeKPIs(
   const cardsExpected = config.expected_cards;
 
   // OOE: good finished output vs the expected batch target
+  const trgPercent = cardsExpected > 0
+    ? Math.min(100, Math.round((cardsGood / cardsExpected) * 100))
+    : 0;
 
   // OEE: yield rate — what fraction of entered cards made it out successfully
   const trsPercent = cardsProduced > 0
@@ -2340,6 +2274,8 @@ export async function fetchLatestOOE() {
 }
 
 export async function fetchOOEHistory(limit = 20) {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
 
   const { data, error } = await supabase
     .from('production_performance')
@@ -2448,25 +2384,518 @@ export async function getDailyReports(): Promise<DailyReport[]> {
   if (!supabase) return [];
 
   try {
-    const { data, error } = await supabase
+    // ── 1. Fetch DB rows ──
+    const { data: dbRows, error: dbError } = await supabase
       .from('daily_reports')
       .select('*')
       .order('report_date', { ascending: false });
 
-    if (error) throw error;
-    return (data || []).map((r: any) => ({
-      id: r.id,
+    const dbReports: DailyReport[] = (dbRows || []).map((r: any) => ({
+      id: String(r.id),
       report_date: r.report_date,
-      trg_percentage: Number(r.trg_percentage),
-      trs_percentage: Number(r.trs_percentage),
-      total_losses: Number(r.total_losses),
-      file_url: r.file_url,
+      report_name: r.report_name || null,
+      trg_percentage: Number(r.trg_percentage ?? 0),
+      trs_percentage: Number(r.trs_percentage ?? 0),
+      total_losses: Number(r.total_losses ?? 0),
+      file_url: r.file_url || null,
+      file_path: r.file_path || null,
+      csv_content: r.csv_content || null,
+      row_count: Number(r.row_count ?? 0),
+      file_size_bytes: Number(r.file_size_bytes ?? 0),
+      scope: r.scope || 'all',
+      source: r.source || 'n8n',
+      workflow_run_id: r.workflow_run_id || null,
       created_at: r.created_at,
     }));
+
+    // ── 2. Scan Supabase Storage for CSVs n8n dropped directly ──
+    // n8n stores files in the 'files' bucket under the 'reports/' folder.
+    // We also check 'n8n-reports' bucket root as a fallback.
+    const storageReports: DailyReport[] = [];
+
+    const buckets: Array<{ bucket: string; prefix: string }> = [
+      { bucket: 'files', prefix: 'reports' },
+      { bucket: 'n8n-reports', prefix: '' },
+    ];
+
+    for (const { bucket, prefix } of buckets) {
+      const { data: files, error: listError } = await supabase.storage
+        .from(bucket)
+        .list(prefix, { limit: 100, sortBy: { column: 'created_at', order: 'desc' } });
+
+      if (listError || !files) continue;
+
+      for (const file of files) {
+        if (!file.name.endsWith('.csv')) continue;
+
+        const storagePath = prefix ? `${prefix}/${file.name}` : file.name;
+
+        // Parse date from filename — expects patterns like YYYY-MM-DD_*.csv
+        const dateMatch = file.name.match(/^(\d{4}-\d{2}-\d{2})/);
+        const reportDate = dateMatch ? dateMatch[1] : (file.created_at?.split('T')[0] ?? new Date().toISOString().split('T')[0]);
+
+        // Generate a signed URL (1 hour expiry) so the download works
+        const { data: signedData } = await supabase.storage
+          .from(bucket)
+          .createSignedUrl(storagePath, 3600);
+
+        storageReports.push({
+          id: `storage-${bucket}-${file.name}`,
+          report_date: reportDate,
+          report_name: file.name.replace(/\.csv$/i, '').replace(/_/g, ' '),
+          trg_percentage: 0,
+          trs_percentage: 0,
+          total_losses: 0,
+          file_url: signedData?.signedUrl ?? undefined,
+          file_path: storagePath,
+          csv_content: undefined,
+          row_count: 0,
+          file_size_bytes: file.metadata?.size ?? 0,
+          scope: 'all',
+          source: 'n8n',
+          workflow_run_id: undefined,
+          created_at: file.created_at ?? new Date().toISOString(),
+        });
+      }
+    }
+
+    // ── 3. Merge: DB rows take priority; storage-only files fill in the gaps ──
+    const dbDates = new Set(dbReports.map((r) => r.report_date));
+    const storageOnly = storageReports.filter((r) => !dbDates.has(r.report_date));
+
+    const merged = [...dbReports, ...storageOnly].sort(
+      (a, b) => new Date(b.report_date).getTime() - new Date(a.report_date).getTime()
+    );
+
+    if (dbError) console.warn('[getDailyReports] DB query warning:', dbError.message);
+    return merged;
   } catch (error) {
     console.error('getDailyReports failed', error);
     return [];
   }
+}
+
+/**
+ * saveN8nReport — called by the app after n8n sends report data.
+ *
+ * n8n workflow should POST to a Supabase Edge Function (or directly call
+ * this via a mobile webhook) with this payload:
+ *
+ * {
+ *   "workflow_run_id": "abc123",      // n8n execution ID (for dedup)
+ *   "report_date": "2026-06-07",      // ISO date
+ *   "report_name": "Daily CSV – June 7",
+ *   "scope": "all",
+ *   "trg_percentage": 87.5,
+ *   "trs_percentage": 91.2,
+ *   "total_losses": 4,
+ *   "row_count": 142,
+ *   "file_size_bytes": 14820,
+ *   "csv_content": "id,status,...\n...",  // full CSV text (optional)
+ *   "file_url": "https://..."            // pre-signed or public URL (optional)
+ * }
+ */
+export async function saveN8nReport(payload: {
+  workflow_run_id?: string;
+  report_date?: string;
+  report_name?: string;
+  scope?: string;
+  trg_percentage?: number;
+  trs_percentage?: number;
+  total_losses?: number;
+  row_count?: number;
+  file_size_bytes?: number;
+  csv_content?: string;
+  file_url?: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return { success: false, error: 'Database not configured' };
+
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    let uploadedFileUrl = payload.file_url || null;
+    let storagePath: string | null = null;
+
+    // ── Upload CSV content to storage bucket if provided and no URL yet ──
+    if (payload.csv_content && !uploadedFileUrl) {
+      const fileName = `${payload.report_date ?? today}_${payload.workflow_run_id ?? Date.now()}.csv`;
+      const csvBytes = new TextEncoder().encode(payload.csv_content);
+      const csvBlob = new Blob([csvBytes], { type: 'text/csv' });
+
+      const { error: uploadError } = await supabase.storage
+        .from('n8n-reports')
+        .upload(fileName, csvBlob, {
+          contentType: 'text/csv',
+          upsert: true,
+        });
+
+      if (!uploadError) {
+        const { data: urlData } = supabase.storage
+          .from('n8n-reports')
+          .getPublicUrl(fileName);
+        uploadedFileUrl = urlData?.publicUrl ?? null;
+        storagePath = fileName;
+      } else {
+        console.warn('[saveN8nReport] Storage upload failed (continuing):', uploadError.message);
+      }
+    }
+
+    // ── Upsert row — deduplicate on workflow_run_id ──
+    const row: Record<string, any> = {
+      report_date: payload.report_date ?? today,
+      report_name: payload.report_name ?? `n8n Report – ${payload.report_date ?? today}`,
+      scope: payload.scope ?? 'all',
+      source: 'n8n',
+      trg_percentage: payload.trg_percentage ?? 0,
+      trs_percentage: payload.trs_percentage ?? 0,
+      total_losses: payload.total_losses ?? 0,
+      row_count: payload.row_count ?? 0,
+      file_size_bytes: payload.file_size_bytes ?? 0,
+      file_url: uploadedFileUrl,
+      file_path: storagePath,
+      csv_content: payload.csv_content ?? null,
+    };
+
+    if (payload.workflow_run_id) {
+      row.workflow_run_id = payload.workflow_run_id;
+    }
+
+    const { data, error } = await supabase
+      .from('daily_reports')
+      .upsert(row, {
+        onConflict: payload.workflow_run_id ? 'workflow_run_id' : undefined,
+        ignoreDuplicates: false,
+      })
+      .select('id')
+      .maybeSingle();
+
+    if (error) throw error;
+    return { success: true, id: data?.id };
+  } catch (err: any) {
+    console.error('[saveN8nReport] failed:', err?.message);
+    return { success: false, error: err?.message || 'Unknown error' };
+  }
+}
+
+// ============================================================================
+// AUTO CSV GENERATION FROM DATABASE
+// ============================================================================
+
+/**
+ * autoGenerateAndSaveCsvReport
+ *
+ * Fetches current data directly from Supabase (electronic_cards, losses,
+ * production_performance), builds a CSV, uploads it to the n8n-reports
+ * storage bucket, and upserts a row in daily_reports.
+ *
+ * Called automatically from the Reports tab on every focus/refresh so that
+ * a fresh CSV is available without waiting for n8n.
+ *
+ * Returns { success, id, skipped } — skipped=true if a report for today
+ * already exists and was not regenerated.
+ */
+export async function autoGenerateAndSaveCsvReport(opts?: {
+  forceRegenerate?: boolean;
+}): Promise<{ success: boolean; id?: string; skipped?: boolean; error?: string }> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return { success: false, error: 'Database not configured' };
+
+  const today = new Date().toISOString().split('T')[0];
+
+  // ── 1. Check if a report for today already exists (skip unless forced) ──
+  if (!opts?.forceRegenerate) {
+    const { data: existing } = await supabase
+      .from('daily_reports')
+      .select('id')
+      .eq('report_date', today)
+      .eq('source', 'app')
+      .maybeSingle();
+
+    if (existing?.id) {
+      return { success: true, id: existing.id, skipped: true };
+    }
+  }
+
+  try {
+    // ── 2. Fetch data in parallel ──
+    const [cardsRes, lossesRes, perfRes] = await Promise.all([
+      supabase
+        .from('electronic_cards')
+        .select('card_id, status, current_stage, current_machine, created_at, updated_at, product_id')
+        .order('updated_at', { ascending: false })
+        .limit(500),
+      supabase
+        .from('losses')
+        .select('id, machine_name, loss_count, reason, loss_zone, cost_tnd, created_at')
+        .gte('created_at', today + 'T00:00:00.000Z')
+        .order('created_at', { ascending: false })
+        .limit(200),
+      supabase
+        .from('production_performance')
+        .select('machine_name, target_count, actual_count, good_count, loss_count, trg_percentage, trs_percentage, date')
+        .order('date', { ascending: false })
+        .limit(30),
+    ]);
+
+    const cards   = cardsRes.data  ?? [];
+    const losses  = lossesRes.data ?? [];
+    const perfs   = perfRes.data   ?? [];
+
+    // ── 3. Build CSV ──
+    const lines: string[] = [];
+    const ts = new Date().toLocaleString('en-GB');
+
+    // Header block
+    lines.push(`SmartTrack Production Report`);
+    lines.push(`Generated,${ts}`);
+    lines.push(`Date,${today}`);
+    lines.push(`Source,app`);
+    lines.push('');
+
+    // ── Section 1: Electronic Cards ──
+    lines.push('=== ELECTRONIC CARDS ===');
+    lines.push('card_id,status,current_stage,current_machine,product_id,created_at,updated_at');
+    for (const c of cards) {
+      lines.push(
+        [
+          csvCell(c.card_id),
+          csvCell(c.status),
+          csvCell(c.current_stage),
+          csvCell(c.current_machine),
+          csvCell(c.product_id),
+          csvCell(c.created_at),
+          csvCell(c.updated_at),
+        ].join(',')
+      );
+    }
+    lines.push('');
+
+    // ── Section 2: Today's Losses ──
+    lines.push('=== LOSSES (TODAY) ===');
+    lines.push('id,machine_name,loss_count,reason,loss_zone,cost_tnd,created_at');
+    for (const l of losses) {
+      lines.push(
+        [
+          csvCell(l.id),
+          csvCell(l.machine_name),
+          csvCell(l.loss_count),
+          csvCell(l.reason),
+          csvCell(l.loss_zone),
+          csvCell(l.cost_tnd),
+          csvCell(l.created_at),
+        ].join(',')
+      );
+    }
+    lines.push('');
+
+    // ── Section 3: Production Performance ──
+    lines.push('=== PRODUCTION PERFORMANCE ===');
+    lines.push('date,machine_name,target_count,actual_count,good_count,loss_count,trg_percentage,trs_percentage');
+    for (const p of perfs) {
+      lines.push(
+        [
+          csvCell(p.date),
+          csvCell(p.machine_name),
+          csvCell(p.target_count),
+          csvCell(p.actual_count),
+          csvCell(p.good_count),
+          csvCell(p.loss_count),
+          csvCell(p.trg_percentage),
+          csvCell(p.trs_percentage),
+        ].join(',')
+      );
+    }
+
+    const csvText = lines.join('\n');
+    const rowCount = cards.length + losses.length + perfs.length;
+    const fileSizeBytes = new TextEncoder().encode(csvText).length;
+
+    // ── 4. Upload CSV to storage ──
+    const fileName = `${today}_app_auto_${Date.now()}.csv`;
+    let fileUrl: string | null = null;
+    let filePath: string | null = null;
+
+    const csvBytes = new TextEncoder().encode(csvText);
+    const { error: uploadError } = await supabase.storage
+      .from('n8n-reports')
+      .upload(fileName, csvBytes, { contentType: 'text/csv', upsert: true });
+
+    if (!uploadError) {
+      const { data: urlData } = supabase.storage
+        .from('n8n-reports')
+        .getPublicUrl(fileName);
+      fileUrl  = urlData?.publicUrl ?? null;
+      filePath = fileName;
+    } else {
+      console.warn('[autoGenerateCsv] Storage upload failed:', uploadError.message);
+    }
+
+    // ── 5. Compute KPIs from latest performance row ──
+    const latestPerf = perfs[0];
+    const trgPct = Number(latestPerf?.trg_percentage ?? 0);
+    const trsPct = Number(latestPerf?.trs_percentage ?? 0);
+    const totalLosses = losses.reduce((s: number, l: any) => s + Number(l.loss_count ?? 0), 0);
+
+    // ── 6. Upsert daily_reports row ──
+    const reportName = `Auto Report – ${new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+
+    const { data: inserted, error: dbError } = await supabase
+      .from('daily_reports')
+      .upsert(
+        {
+          report_date:     today,
+          report_name:     reportName,
+          scope:           'all',
+          source:          'app',
+          trg_percentage:  trgPct,
+          trs_percentage:  trsPct,
+          total_losses:    totalLosses,
+          row_count:       rowCount,
+          file_size_bytes: fileSizeBytes,
+          file_url:        fileUrl,
+          file_path:       filePath,
+          csv_content:     csvText,
+        },
+        { onConflict: 'report_date,source', ignoreDuplicates: false }
+      )
+      .select('id')
+      .maybeSingle();
+
+    if (dbError) {
+      // If upsert conflict key doesn't exist yet, fall back to plain insert
+      const { data: inserted2, error: insertError } = await supabase
+        .from('daily_reports')
+        .insert({
+          report_date:     today,
+          report_name:     reportName,
+          scope:           'all',
+          source:          'app',
+          trg_percentage:  trgPct,
+          trs_percentage:  trsPct,
+          total_losses:    totalLosses,
+          row_count:       rowCount,
+          file_size_bytes: fileSizeBytes,
+          file_url:        fileUrl,
+          file_path:       filePath,
+          csv_content:     csvText,
+        })
+        .select('id')
+        .maybeSingle();
+
+      if (insertError) throw insertError;
+      return { success: true, id: inserted2?.id };
+    }
+
+    return { success: true, id: inserted?.id };
+  } catch (err: any) {
+    console.error('[autoGenerateCsv] failed:', err?.message);
+    return { success: false, error: err?.message ?? 'Unknown error' };
+  }
+}
+
+/** Escape a value for CSV output */
+function csvCell(val: any): string {
+  if (val === null || val === undefined) return '';
+  const str = String(val);
+  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+export async function generateCsvStringForDate(dateStr: string): Promise<string> {
+  const supabase = getSupabaseClient();
+  if (!supabase) throw new Error('Database not configured');
+
+  const startOfDay = `${dateStr}T00:00:00.000Z`;
+  const endOfDay = `${dateStr}T23:59:59.999Z`;
+
+  const [cardsRes, lossesRes, perfRes] = await Promise.all([
+    supabase
+      .from('electronic_cards')
+      .select('card_id, status, current_stage, current_machine, created_at, updated_at, product_id')
+      .or(`created_at.gte.${startOfDay},updated_at.gte.${startOfDay}`)
+      .order('updated_at', { ascending: false })
+      .limit(1000),
+    supabase
+      .from('losses')
+      .select('id, machine_name, loss_count, reason, loss_zone, cost_tnd, created_at')
+      .gte('created_at', startOfDay)
+      .lte('created_at', endOfDay)
+      .order('created_at', { ascending: false })
+      .limit(500),
+    supabase
+      .from('production_performance')
+      .select('machine_name, target_count, actual_count, good_count, loss_count, trg_percentage, trs_percentage, date')
+      .eq('date', dateStr)
+      .limit(100),
+  ]);
+
+  const cards   = cardsRes.data  ?? [];
+  const losses  = lossesRes.data ?? [];
+  const perfs   = perfRes.data   ?? [];
+
+  const lines: string[] = [];
+  lines.push(`SmartTrack Production Report`);
+  lines.push(`Date,${dateStr}`);
+  lines.push(`Exported At,${new Date().toLocaleString('en-GB')}`);
+  lines.push('');
+
+  // ── Section 1: Electronic Cards ──
+  lines.push('=== ELECTRONIC CARDS ===');
+  lines.push('card_id,status,current_stage,current_machine,product_id,created_at,updated_at');
+  for (const c of cards) {
+    lines.push(
+      [
+        csvCell(c.card_id),
+        csvCell(c.status),
+        csvCell(c.current_stage),
+        csvCell(c.current_machine),
+        csvCell(c.product_id),
+        csvCell(c.created_at),
+        csvCell(c.updated_at),
+      ].join(',')
+    );
+  }
+  lines.push('');
+
+  // ── Section 2: Losses ──
+  lines.push('=== LOSSES ===');
+  lines.push('id,machine_name,loss_count,reason,loss_zone,cost_tnd,created_at');
+  for (const l of losses) {
+    lines.push(
+      [
+        csvCell(l.id),
+        csvCell(l.machine_name),
+        csvCell(l.loss_count),
+        csvCell(l.reason),
+        csvCell(l.loss_zone),
+        csvCell(l.cost_tnd),
+        csvCell(l.created_at),
+      ].join(',')
+    );
+  }
+  lines.push('');
+
+  // ── Section 3: Production Performance ──
+  lines.push('=== PRODUCTION PERFORMANCE ===');
+  lines.push('date,machine_name,target_count,actual_count,good_count,loss_count,trg_percentage,trs_percentage');
+  for (const p of perfs) {
+    lines.push(
+      [
+        csvCell(p.date),
+        csvCell(p.machine_name),
+        csvCell(p.target_count),
+        csvCell(p.actual_count),
+        csvCell(p.good_count),
+        csvCell(p.loss_count),
+        csvCell(p.trg_percentage),
+        csvCell(p.trs_percentage),
+      ].join(',')
+    );
+  }
+
+  return lines.join('\n');
 }
 
 export async function savePushToken(token: string): Promise<void> {
@@ -2525,26 +2954,29 @@ export async function fetchInspectedLosses(
       .order('created_at', { ascending: false });
 
     if (error) throw error;
-    return (data || []).map((r: any) => ({
-      id: r.id,
-      machine_name: r.machine_name || '',
-      loss_count: Number(r.loss_count) || 0,
-      reason: r.reason || null,
-      loss_zone: r.loss_zone || null,
-      cost_tnd: Number(r.cost_tnd) || 0,
-      created_at: r.created_at,
-      root_cause: r.root_cause
-        ? {
-            id: r.root_cause.id,
-            loss_id: r.root_cause.loss_id,
-            cause_category: r.root_cause.cause_category,
-            cause_details: r.root_cause.cause_details || null,
-            photo_url: r.root_cause.photo_url || null,
-            operator_id: r.root_cause.operator_id,
-            created_at: r.root_cause.created_at,
-          }
-        : null,
-    }));
+    return (data || []).map((r: any) => {
+      const result: InspectedLoss = {
+        id: r.id,
+        machineName: r.machine_name || '',
+        lossCount: Number(r.loss_count) || 0,
+        reason: r.reason || undefined,
+        lossZone: r.loss_zone || undefined,
+        costTnd: Number(r.cost_tnd) || 0,
+        createdAt: r.created_at,
+        root_cause: r.root_cause
+          ? {
+              id: r.root_cause.id,
+              loss_id: r.root_cause.loss_id,
+              cause_category: r.root_cause.cause_category,
+              cause_details: r.root_cause.cause_details || null,
+              photo_url: r.root_cause.photo_url || null,
+              operator_id: r.root_cause.operator_id,
+              created_at: r.root_cause.created_at,
+            }
+          : null,
+      };
+      return result;
+    });
   } catch (error) {
     console.error('fetchInspectedLosses failed', error);
     return [];
@@ -2564,27 +2996,66 @@ export async function submitInspection(params: {
   try {
     let photoUrl: string | null = null;
 
+    // Attempt to upload photo if provided, but don't fail submission if upload fails
     if (params.photoUri) {
-      const ext = params.photoUri.split('.').pop() || 'jpg';
-      const fileName = `inspection_${params.lossId}_${Date.now()}.${ext}`;
       try {
-        const response = await fetch(params.photoUri);
-        const blob = await response.blob();
-        const uploadResult = await supabase.storage
-          .from('inspection_photos')
-          .upload(fileName, blob, { contentType: `image/${ext}` });
-
+        console.log('[Inspection] Uploading photo from:', params.photoUri);
+        
+        // Get file extension
+        const uriParts = params.photoUri.split('.');
+        const ext = uriParts[uriParts.length - 1]?.toLowerCase() || 'jpg';
+        const contentType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+        
+        // Generate unique filename
+        const fileName = `inspection_${params.lossId}_${Date.now()}.${ext}`;
+        
+        // Read file as base64 using expo-file-system (more reliable than fetch for local URIs)
+        console.log('[Inspection] Reading file as base64...');
+        const base64Data = await FileSystem.readAsStringAsync(params.photoUri, {
+          encoding: 'base64',
+        });
+        
+        // Convert base64 to Blob for upload
+        const binaryString = atob(base64Data);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: contentType });
+        
+        console.log('[Inspection] Photo converted to blob:', {
+          size: blob.size,
+          type: blob.type,
+        });
+        
+        // Upload with retry logic from uploadFileToStorage
+        console.log('[Inspection] Starting upload to inspection_photos bucket...');
+        const uploadResult = await uploadFileToStorage(
+          'inspection_photos',
+          fileName,
+          blob,
+          { contentType, maxRetries: 3 }
+        );
+        
         if (uploadResult.error) {
-          console.error('Photo upload failed', uploadResult.error);
+          console.warn('[Inspection] Photo upload failed, but continuing with submission:', uploadResult.error);
         } else {
+          // Generate public URL
           const { data: urlData } = supabase.storage.from('inspection_photos').getPublicUrl(fileName);
           photoUrl = urlData?.publicUrl || null;
+          console.log('[Inspection] Photo uploaded successfully:', { photoUrl });
         }
-      } catch (uploadErr) {
-        console.error('Photo upload exception', uploadErr);
+      } catch (uploadErr: any) {
+        // Log error but don't fail the entire submission
+        console.warn('[Inspection] Photo upload exception (non-blocking):', {
+          message: uploadErr?.message,
+          code: uploadErr?.code,
+        });
       }
     }
 
+    // Submit inspection record (photos are optional)
+    console.log('[Inspection] Submitting inspection record...');
     const { error: insertError } = await supabase.from('loss_root_causes').insert({
       loss_id: params.lossId,
       cause_category: params.category,
@@ -2595,17 +3066,24 @@ export async function submitInspection(params: {
 
     if (insertError) throw insertError;
 
+    console.log('[Inspection] Inspection submitted successfully');
+
     // Non-blocking: mark related alert as read
-    supabase
+    (supabase
       .from('alerts')
       .update({ is_read: true })
       .eq('type', 'loss')
-      .eq('card_id', params.lossId)
-      .then().catch(() => {});
+      .eq('card_id', params.lossId) as any)
+      .then(() => console.log('[Inspection] Alert marked as read'))
+      .catch((err: any) => console.warn('[Inspection] Failed to mark alert as read:', err));
 
     return { success: true };
   } catch (error: any) {
-    console.error('submitInspection failed', error);
+    console.error('[Inspection] Submission failed:', {
+      message: error?.message,
+      code: error?.code,
+      details: error?.details,
+    });
     return { success: false, error: error?.message || 'Failed to submit inspection' };
   }
 }

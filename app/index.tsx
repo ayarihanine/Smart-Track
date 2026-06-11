@@ -6,9 +6,9 @@ import { colors } from '@/constants/design';
 
 export default function Index() {
   const { isAuthenticated, isLoading: authLoading } = useAuthStore();
-  const { hasSeenOnboarding } = useSettingsStore();
+  const { hasSeenOnboarding, isLoaded: settingsLoaded } = useSettingsStore();
 
-  if (authLoading) {
+  if (authLoading || !settingsLoaded) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
         <ActivityIndicator size="large" color={colors.primary} />

@@ -172,15 +172,23 @@ export default function HomeScreen() {
         let blocked = 0;
         let pending = 0;
 
-        // BUG 4 FIX: Count ALL statuses including 'removed' so total reconciles.
-        // blocked bucket = cancelled + removed (non-active, non-complete, non-pending)
+        // BUG 4 FIX: Count ALL statuses including 'removed' and 'blocked' so total reconciles.
+        // blocked bucket = cancelled + removed + blocked (non-active, non-complete, non-pending)
         // on_hold counts as in_progress (temporarily paused, not lost)
         data.forEach((c: any) => {
-          if (c.status === 'in_progress' || c.status === 'on_hold') inProgress++;
-          else if (c.status === 'completed') completed++;
-          else if (c.status === 'cancelled' || c.status === 'removed') blocked++;
-          else if (c.status === 'pending') pending++;
-          // Any other status is already counted in data.length (total)
+          if (c.status === 'in_progress' || c.status === 'on_hold') {
+            inProgress++;
+          } else if (c.status === 'completed') {
+            completed++;
+          } else if (c.status === 'cancelled' || c.status === 'removed' || c.status === 'blocked' || c.status === 'lost') {
+            blocked++;
+          } else if (c.status === 'pending') {
+            pending++;
+          } else {
+            // Safely default unrecognized statuses to blocked to reconcile total
+            blocked++;
+            console.debug(`[HomeScreen] Unrecognized card status encountered: ${c.status}`);
+          }
         });
 
         // Validate: total must equal sum of all buckets
@@ -379,56 +387,63 @@ export default function HomeScreen() {
         
         // Fetch the image as a blob
         console.log('[Photo Upload] Fetching image from local URI...');
-        const response = await fetch(uri, { timeout: 10000 });
-        if (!response.ok) {
-          throw new Error(`Failed to fetch image: ${response.statusText}`);
-        }
-        
-        const blob = await response.blob();
-        console.log('[Photo Upload] Image fetched successfully');
-        console.log('[Photo Upload] Blob details:', { size: blob.size, type: blob.type });
-
-        // Use retry-enabled upload function
-        console.log('[Photo Upload] Starting upload to inspection_photos bucket...');
-        const { error: uploadError, data } = await uploadFileToStorage(
-          'inspection_photos',
-          fileName,
-          blob,
-          { 
-            contentType: `image/${ext}`,
-            maxRetries: 3
-          }
-        );
-
-        if (uploadError) {
-          console.error('[Photo Upload] Upload failed:', {
-            message: uploadError.message,
-            statusCode: (uploadError as any).statusCode || (uploadError as any).status,
-            error: uploadError
-          });
-          
-          // Provide specific error messages based on error type
-          let errorMessage = 'Failed to upload photo.';
-          const statusCode = (uploadError as any).statusCode || (uploadError as any).status;
-          
-          if (statusCode === 403 || uploadError.message?.includes('Permission denied')) {
-            errorMessage = 'Permission denied. Make sure you are logged in and the "inspection_photos" bucket has proper access policies.';
-          } else if (statusCode === 404 || uploadError.message?.includes('not found')) {
-            errorMessage = 'The "inspection_photos" bucket does not exist in Supabase Storage. Please contact your administrator.';
-          } else if (statusCode === 401 || uploadError.message?.includes('Unauthorized')) {
-            errorMessage = 'Authentication failed. Please log in and try again.';
-          } else if (uploadError.message?.includes('network') || uploadError.message?.includes('Network')) {
-            errorMessage = 'Network error. Please check your internet connection and try again.';
-          } else if (uploadError.message?.includes('timeout')) {
-            errorMessage = 'Upload timed out. Please check your internet connection and try again.';
-          } else {
-            errorMessage = uploadError.message || errorMessage;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        try {
+          const response = await fetch(uri, { signal: controller.signal });
+          clearTimeout(timeoutId);
+          if (!response.ok) {
+            throw new Error(`Failed to fetch image: ${response.statusText}`);
           }
           
-          throw new Error(errorMessage);
+          const blob = await response.blob();
+          console.log('[Photo Upload] Image fetched successfully');
+          console.log('[Photo Upload] Blob details:', { size: blob.size, type: blob.type });
+
+          // Use retry-enabled upload function
+          console.log('[Photo Upload] Starting upload to inspection_photos bucket...');
+          const { error: uploadError, data } = await uploadFileToStorage(
+            'inspection_photos',
+            fileName,
+            blob,
+            { 
+              contentType: `image/${ext}`,
+              maxRetries: 3
+            }
+          );
+
+          if (uploadError) {
+            console.error('[Photo Upload] Upload failed:', {
+              message: uploadError.message,
+              statusCode: (uploadError as any).statusCode || (uploadError as any).status,
+              error: uploadError
+            });
+            
+            // Provide specific error messages based on error type
+            let errorMessage = 'Failed to upload photo.';
+            const statusCode = (uploadError as any).statusCode || (uploadError as any).status;
+            
+            if (statusCode === 403 || uploadError.message?.includes('Permission denied')) {
+              errorMessage = 'Permission denied. Make sure you are logged in and the "inspection_photos" bucket has proper access policies.';
+            } else if (statusCode === 404 || uploadError.message?.includes('not found')) {
+              errorMessage = 'The "inspection_photos" bucket does not exist in Supabase Storage. Please contact your administrator.';
+            } else if (statusCode === 401 || uploadError.message?.includes('Unauthorized')) {
+              errorMessage = 'Authentication failed. Please log in and try again.';
+            } else if (uploadError.message?.includes('network') || uploadError.message?.includes('Network')) {
+              errorMessage = 'Network error. Please check your internet connection and try again.';
+            } else if (uploadError.message?.includes('timeout')) {
+              errorMessage = 'Upload timed out. Please check your internet connection and try again.';
+            } else {
+              errorMessage = uploadError.message || errorMessage;
+            }
+            
+            throw new Error(errorMessage);
+          }
+          
+          console.log('[Photo Upload] Upload successful:', fileName);
+        } finally {
+          clearTimeout(timeoutId);
         }
-        
-        console.log('[Photo Upload] Upload successful:', fileName);
       } catch (err: any) {
         console.error('[Photo Upload] Process failed:', err);
         Alert.alert(
@@ -483,7 +498,7 @@ export default function HomeScreen() {
               <Ionicons name="menu" size={24} color={palette.text} />
             </TouchableOpacity>
             <View style={{ marginLeft: 4 }}>
-              <Text style={[styles.userName, { color: palette.text }]}>CardTrack</Text>
+              <Text style={[styles.userName, { color: palette.text }]}>SmartTrack</Text>
               <Text style={[styles.greeting, { color: palette.textSecondary }]}>{getGreetingText()}, {user?.displayName || 'User'}</Text>
             </View>
           </View>
@@ -760,21 +775,7 @@ export default function HomeScreen() {
                 </View>
               </TouchableOpacity>
 
-              <TouchableOpacity
-                style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}
-                onPress={() => {
-                  setMainMenuVisible(false);
-                  router.push('/(tabs)/reports');
-                }}
-              >
-                <View style={[styles.sheetActionIcon, { backgroundColor: '#DBEAFE' }]}>
-                  <Ionicons name="document-text" size={20} color="#2563EB" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.sheetActionText, { color: palette.text }]}>{t('reports') || 'Reports'}</Text>
-                  <Text style={[styles.sheetActionSub, { color: palette.textTertiary }]}>Daily reports with OEE & losses</Text>
-                </View>
-              </TouchableOpacity>
+
 
               <TouchableOpacity
                 style={[styles.sheetActionBtn, { borderBottomColor: palette.border }]}

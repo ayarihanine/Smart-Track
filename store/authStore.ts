@@ -109,7 +109,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             console.log('Profile update received:', payload.new);
             const data = payload.new;
             set((state) => {
-              const rawDisplayName = data.display_name || data.displayName || state.user.displayName || '';
+              const rawDisplayName = data.display_name || data.displayName || state.user?.displayName || '';
               const displayName = rawDisplayName.includes('@') ? rawDisplayName.split('@')[0] : rawDisplayName;
               const updatedUser = state.user ? {
                 ...state.user,

@@ -134,11 +134,15 @@ export default function IssuesScreen() {
               style={[
                 styles.chip,
                 {
-                  backgroundColor: filterPriority === priority ? getPriorityColor(priority) : palette.backgroundSecondary,
-                  borderColor: filterPriority === priority ? getPriorityColor(priority) : palette.border,
+                  backgroundColor: filterPriority === priority 
+                    ? (priority === 'all' ? palette.primary : getPriorityColor(priority as IssuePriority))
+                    : palette.backgroundSecondary,
+                  borderColor: filterPriority === priority
+                    ? (priority === 'all' ? palette.primary : getPriorityColor(priority as IssuePriority))
+                    : palette.border,
                 },
               ]}
-              onPress={() => setFilterPriority(priority)}
+              onPress={() => setFilterPriority(priority as any)}
             >
               <Text
                 style={[
@@ -346,7 +350,7 @@ export default function IssuesScreen() {
                   </View>
                 )}
 
-                <View style={{ color: palette.textTertiary, marginTop: 8 }}>
+                <View style={{ marginTop: 8 }}>
                    <Text style={{ color: palette.textTertiary, marginTop: 8 }}>Task management and comments integration pending.</Text>
                 </View>
 

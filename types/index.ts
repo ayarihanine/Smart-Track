@@ -215,10 +215,18 @@ export interface LossRow {
 export interface DailyReport {
   id: string;
   report_date: string;
+  report_name?: string;
   trg_percentage: number;
   trs_percentage: number;
   total_losses: number;
-  file_url: string;
+  file_url?: string;
+  file_path?: string;
+  csv_content?: string;
+  row_count?: number;
+  file_size_bytes?: number;
+  scope?: string;
+  source?: string;
+  workflow_run_id?: string;
   created_at: string;
 }
 

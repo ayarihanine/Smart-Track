@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView,
-  KeyboardAvoidingView, Platform, ActivityIndicator, Alert,
+  KeyboardAvoidingView, Platform, ActivityIndicator, Alert, Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -69,8 +69,12 @@ export default function AuthScreen() {
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           {/* Header */}
           <View style={styles.header}>
-            <View style={styles.logoContainer}>
-              <Ionicons name="hardware-chip" size={40} color={colors.white} />
+            <View style={[styles.logoContainer, { backgroundColor: 'transparent' }]}>
+              <Image
+                source={require('@/assets/logo.png')}
+                style={styles.logoImage}
+                resizeMode="contain"
+              />
             </View>
             <Text style={styles.title}>SmartTrack</Text>
             <Text style={styles.subtitle}>{t('authSubtitle')}</Text>
@@ -203,6 +207,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center', marginBottom: spacing.md,
     ...shadows.lg,
   },
+  logoImage: { width: '100%', height: '100%', borderRadius: 20 },
   title: { ...typography.h1, color: colors.white, marginBottom: spacing.xs },
   subtitle: { ...typography.caption, color: colors.textTertiary },
   card: {

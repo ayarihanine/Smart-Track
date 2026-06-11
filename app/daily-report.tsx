@@ -53,7 +53,7 @@ export default function DailyReportScreen() {
       XLSX.utils.book_append_sheet(workbook, worksheet, 'N8N_Daily_Report');
       
       const wbout = XLSX.write(workbook, { type: 'base64', bookType: 'xlsx' });
-      const fileUri = `${FileSystem.cacheDirectory}CardTrack_Daily_Report_${dateString}.xlsx`;
+      const fileUri = `${FileSystem.cacheDirectory}SmartTrack_Daily_Report_${dateString}.xlsx`;
 
       await FileSystem.writeAsStringAsync(fileUri, wbout, { encoding: FileSystem.EncodingType.Base64 });
 

@@ -34,6 +34,10 @@ export default function TabLayout() {
         // Refetch on any electronic_cards change (status updates, new cards)
         loadCount();
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'losses' }, () => {
+        // Refetch on any losses change
+        loadCount();
+      })
       .subscribe();
 
     return () => {
