@@ -1,4 +1,4 @@
-# SmartTrack (CardTrack)
+# SmartTrack 
 
 **SmartTrack** is an advanced, offline-first production tracking application engineered to trace and manage Electronic Cards across assembly lines, testing stations, and QC operations. The application is built using React Native (Expo) and integrates deeply with Supabase and n8n webhooks for global automation.
 
