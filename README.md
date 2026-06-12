@@ -2,7 +2,7 @@
 
 **SmartTrack** is an advanced, offline-first production tracking application engineered to trace and manage Electronic Cards across assembly lines, testing stations, and QC operations. The application is built using React Native (Expo) and integrates deeply with Supabase and n8n webhooks for global automation.
 
-## 🚀 Key Features
+## Key Features
 
 - **Offline-First Synchronization**: Capable of continuing full operations in complete network isolation using an intelligent local AsyncStorage queue system with `Zustand`.
 - **Batch Processing**: Enqueue multiple QR code / Barcode scans rapidly without network overhead and push them synchronously when required.
