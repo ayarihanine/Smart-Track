@@ -13,130 +13,9 @@
 
 ---
 
-## 🏗️ Architecture Diagrams
 
-### 1. Global Architecture
 
-The SmartTrack ecosystem heavily leverages a client-side architecture backed by Supabase with optional orchestration via webhooks.
-
-```mermaid
-graph TD;
-    subgraph Client Application [Expo React Native App]
-        UI[User Interface & Forms]
-        Scanner[Barcode/QR Scanner]
-        State[Zustand Stores]
-        Cache[(AsyncStorage SQLite)]
-    end
-
-    subgraph Backend Infrastructure
-        Supabase[(Supabase DB & Auth)]
-        Realtime[Supabase Realtime]
-    end
-
-    subgraph Orchestration
-        Webhook[N8N / Webhooks]
-        Enterprise[Enterprise ERP/Alerting]
-    end
-
-    UI --> |Reads/Writes| State
-    Scanner --> |Enqueues Scans| State
-    State --> |Sync/Auth| Supabase
-    State --> |Persist| Cache
-    Cache -.-> |Hydrates Offline| State
-    Supabase -.-> |Broadcasts| Realtime
-    Realtime -.-> |Updates| UI
-    State --> |Alerts| Webhook
-    Webhook --> |Triggers| Enterprise
-```
-
-### 2. Offline Sync Sequence
-
-When operators traverse manufacturing areas lacking WiFi coverage, SmartTrack ensures continuous operation.
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant App (Zustand)
-    participant LocalCache (AsyncStorage)
-    participant NetworkMonitor
-    participant Supabase
-
-    User->>App (Zustand): Scan Electronic Card (Batch Mode)
-    App (Zustand)->>App (Zustand): Evaluate Network Availability
-
-    alt Is Offline
-        App (Zustand)->>LocalCache (AsyncStorage): Add to Pending Scans Queue
-        App (Zustand)-->>User: Show Queue Size
-    else Is Online
-        App (Zustand)->>Supabase: recordScan() API
-        Supabase-->>App (Zustand): Success
-        App (Zustand)-->>User: Scan Validated
-    end
-
-    NetworkMonitor->>App (Zustand): Connection Restored
-    App (Zustand)->>LocalCache (AsyncStorage): Retrieve Pending Scans
-    App (Zustand)->>Supabase: Batch Execute Pending API Requests
-    Supabase-->>App (Zustand): 200 OK
-    App (Zustand)->>LocalCache (AsyncStorage): Clear Queue
-    App (Zustand)-->>User: Trigger "Sync Complete" Notification
-```
-
-### 3. Core Class & State Diagram
-
-The fundamental domain entities and state stores utilized by the platform.
-
-```mermaid
-classDiagram
-    class OfflineStore {
-        +boolean isOnline
-        +boolean isSyncing
-        +PendingScan[] pendingScans
-        +setOnline(status)
-        +addPendingScan(scan)
-        +syncPending()
-    }
-
-    class AuthStore {
-        +UserProfile user
-        +boolean isLoading
-        +initialize()
-        +signIn()
-        +signOut()
-    }
-
-    class SettingsStore {
-        +boolean offlineModeEnabled
-        +boolean notificationsEnabled
-        +string webhookUrl
-        +loadSettings()
-        +updateSettings()
-    }
-
-    class ElectronicCard {
-        +string id
-        +string cardId
-        +string status
-        +string currentMachine
-        +int progressPercent
-        +LoadingPlanEntry[] loadingPlan
-        +ComponentInsertion[] componentInsertions
-    }
-
-    class ScanEvent {
-        +string id
-        +string cardId
-        +string stage
-        +string eventType
-        +string timestamp
-    }
-
-    OfflineStore --> ScanEvent : Queues
-    ElectronicCard "1" *-- "many" ScanEvent : Tracks History
-```
-
----
-
-## 📦 Tech Stack
+##  Tech Stack
 
 | Technology | Purpose |
 | ---------- | ------- |
@@ -146,7 +25,7 @@ classDiagram
 | **Supabase** | Backend-as-a-Service providing PostgreSQL, Auth, and RLS policies. |
 | **TailwindCSS (NativeWind)** | Accelerated UI styling logic. |
 
-## 🛠️ Configuration & Setup
+## Configuration & Setup
 
 1. **Environment Initialization:**
    Rename `.env.local.example` to `.env.local` and add your database configuration:
@@ -169,6 +48,6 @@ classDiagram
    bun run start:android # Launches Android Emulator
    ```
 
-## 🔒 Security
+## Security
 
 All reads and writes are protected strictly by Supabase's **Row Level Security (RLS)** ensuring operators can only modify data aligned with their currently assigned department, whilst administrators maintain super-user privileges.
